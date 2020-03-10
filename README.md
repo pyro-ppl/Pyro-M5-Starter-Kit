@@ -6,19 +6,19 @@ This repo aims to help you learn the [Pyro](https://pyro.ai) probabilistic progr
 
 ## Documentation resources
 
-- Pyro reference docs https://docs.pyro.ai
-  - Installation https://docs.pyro.ai/en/stable/installation.html
-  - Forecasting https://docs.pyro.ai/en/stable/contrib.forecast.html
-  - Distributions https://docs.pyro.ai/en/stable/distributions.html
-  - Reparameterizers https://docs.pyro.ai/en/stable/infer.reparam.html
-  - Time series https://docs.pyro.ai/en/stable/contrib.timeseries.html
-- Pyro tutorials https://pyro.ai/examples
-- Pyro forum https://forum.pyro.ai  <---- ask questions here
-- PyTorch reference docs https://pytorch.org/docs/stable/index.html
+- Pyro [reference docs](https://docs.pyro.ai)
+  - [Installation](https://docs.pyro.ai/en/stable/installation.html)
+  - [Forecasting](https://docs.pyro.ai/en/stable/contrib.forecast.html)
+  - [Distributions](https://docs.pyro.ai/en/stable/distributions.html)
+  - [Reparameterizers](https://docs.pyro.ai/en/stable/infer.reparam.html)
+  - [Time series](https://docs.pyro.ai/en/stable/contrib.timeseries.html)
+- Pyro [tutorials](https://pyro.ai/examples)
+- Pyro [forum](https://forum.pyro.ai)  <---- ask questions here
+- PyTorch [reference docs](https://pytorch.org/docs/stable/index.html)
 - M5 competition [overview](https://www.kaggle.com/c/m5-forecasting-uncertainty/overview)
 - M5 exploratory data analysis [notebook](https://www.kaggle.com/headsortails/back-to-predict-the-future-interactive-m5-eda) (thanks to Martin Henze)
 
-I'd recommend starting with the following sequence of Pyro tutorials. These build up to `Model2` of the [hierarchical forecasting tutorial](https://pyro.ai/examples/forecasting_iii.html#Deeper-hierarchical-models), which is very close to the M5 forecasting problem.
+I'd recommend starting with the following sequence of Pyro tutorials. These build up to [Forecasting III's Model2](https://pyro.ai/examples/forecasting_iii.html#Deeper-hierarchical-models) which is very close to the M5 forecasting problem.
 
 1. [Pyro models](https://pyro.ai/examples/intro_part_i.html) *recommended*
 2. [Pyro inference](https://pyro.ai/examples/intro_part_ii.html)
