@@ -6,9 +6,15 @@ This repo aims to help you learn the [Pyro](https://pyro.ai) probabilistic progr
 
 ## Documentation resources
 
-- Pyro reference docs: https://docs.pyro.ai
-- Pyro forum: https://forum.pyro.ai  <---- ask questions here
-- Pyro tutorials: https://pyro.ai/examples
+- Pyro reference docs https://docs.pyro.ai
+  - Installation https://docs.pyro.ai/en/stable/installation.html
+  - Forecasting https://docs.pyro.ai/en/stable/contrib.forecast.html
+  - Distributions https://docs.pyro.ai/en/stable/distributions.html
+  - Reparameterizers https://docs.pyro.ai/en/stable/infer.reparam.html
+  - Time series https://docs.pyro.ai/en/stable/contrib.timeseries.html
+- Pyro tutorials https://pyro.ai/examples
+- Pyro forum https://forum.pyro.ai  <---- ask questions here
+- PyTorch reference docs https://pytorch.org/docs/stable/index.html
 - M5 competition [overview](https://www.kaggle.com/c/m5-forecasting-uncertainty/overview)
 - M5 exploratory data analysis [notebook](https://www.kaggle.com/headsortails/back-to-predict-the-future-interactive-m5-eda) (thanks to Martin Henze)
 
