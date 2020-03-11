@@ -165,7 +165,7 @@ class M5Data:
         """
         return torch.from_numpy(self.get_calendar_df().index.str.endswith("12-25"))
 
-    def get_aggregated_sales(self, state=False, store=False, cat=False, dept=False, item=False):
+    def get_aggregated_sales(self, state=True, store=True, cat=True, dept=True, item=True):
         """
         Returns aggregated sales.
         """
