@@ -165,30 +165,54 @@ class M5Data:
         """
         return torch.from_numpy(self.get_calendar_df().index.str.endswith("12-25"))
 
-    def get_aggregated_tensor(self, state=False, store=False, category=False, department=False):
+    def get_aggregated_sales(self, state=False, store=False, cat=False, dept=False, item=False):
         """
         Returns aggregated sales.
         """
-        # TODO: aggregate and return correct index
-        pass
+        groups = []
+        if not state:
+            groups.append("state_id")
+        if not store:
+            groups.append("store_id")
+        if not cat:
+            groups.append("cat_id")
+        if not dept:
+            groups.append("dept_id")
+        if not item:
+            groups.append("item_id")
 
+        if len(groups) > 0:
+            x = self.sales_df.groupby(groups).sum().values
+        else:
+            x = self.sales_df.iloc[:, 5:].sum().values[None, :]
+        return torch.from_numpy(x).type(torch.get_default_dtype())
+
+    def get_all_aggregated_sales(self):
+        xs = []
+        for level in self.aggregation_levels:
+            xs.append(self.get_aggregated_sales(**level))
+        xs = torch.cat(xs, 0)
+        assert xs.shape[0] == 42840
+        return xs
+
+    @property
     def aggregation_levels(self):
         """
         Returns the list of all aggregation levels.
         """
         return [
-            {"state": True, "store": True, "category": True, "department": True},
-            {"state": False, "store": True, "category": True, "department": True},
-            {"state": True, "store": False, "category": True, "department": True},
-            {"state": True, "store": True, "category": False, "department": True},
-            {"state": True, "store": True, "category": True, "department": False},
-            {"state": False, "store": True, "category": False, "department": True},
-            {"state": False, "store": True, "category": True, "department": False},
-            {"state": True, "store": False, "category": False, "department": True},
-            {"state": True, "store": False, "category": True, "department": False},
-            {"state": True, "store": True, "category": False, "department": False},
-            {"state": False, "store": True, "category": False, "department": False},
-            {"state": False, "store": False, "category": False, "department": False},
+            {"state": True,  "store": True,  "cat": True,  "dept": True,  "item": True},
+            {"state": False, "store": True,  "cat": True,  "dept": True,  "item": True},
+            {"state": True,  "store": False, "cat": True,  "dept": True,  "item": True},
+            {"state": True,  "store": True,  "cat": False, "dept": True,  "item": True},
+            {"state": True,  "store": True,  "cat": True,  "dept": False, "item": True},
+            {"state": False, "store": True,  "cat": False, "dept": True,  "item": True},
+            {"state": False, "store": True,  "cat": True,  "dept": False, "item": True},
+            {"state": True,  "store": False, "cat": False, "dept": True,  "item": True},
+            {"state": True,  "store": False, "cat": True,  "dept": False, "item": True},
+            {"state": True,  "store": True,  "cat": True,  "dept": True,  "item": False},
+            {"state": False, "store": True,  "cat": True,  "dept": True,  "item": False},
+            {"state": False, "store": False, "cat": False, "dept": False, "item": False},
         ]
 
     def make_accuracy_submission(self, filename, prediction):
@@ -205,6 +229,9 @@ class M5Data:
 
     def make_uncertainty_submission(self, filename, median, quantile_50,
                                     quantile_67, quantile_95, quantile_99):
+        """
+        Each median is a dict of {level: value}
+        """
         # TODO: arrange uncertainty in correct rows
         # avoid duplicated `sample_submission.csv` filename
         pass
