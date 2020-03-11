@@ -36,6 +36,14 @@ class M5Data:
         return self.sales_df.shape[0]
 
     @property
+    def num_aggregations(self):
+        return 42840
+
+    @property
+    def quantiles(self):
+        return [0.005, 0.025, 0.165, 0.25, 0.5, 0.75, 0.835, 0.975, 0.995]
+
+    @property
     def num_days(self):
         return self.sales_df.shape[1] - 5 + 2 * 28
 
@@ -50,24 +58,27 @@ class M5Data:
     @property
     def sales_df(self):
         if self._sales_df is None:
-            self._sales_df = self.read_csv("sales_train_validation.csv", index_col=0)
+            self._sales_df = self._read_csv("sales_train_validation.csv", index_col=0)
         return self._sales_df
 
     @property
     def calendar_df(self):
         if self._calendar_df is None:
-            self._calendar_df = self.read_csv("calendar.csv", index_col=0)
+            self._calendar_df = self._read_csv("calendar.csv", index_col=0)
         return self._calendar_df
 
     @property
     def prices_df(self):
         if self._prices_df is None:
-            df = self.read_csv("sell_prices.csv")
+            df = self._read_csv("sell_prices.csv")
             df["id"] = df.item_id + "_" + df.store_id + "_validation"
             self._prices_df = df
         return self._prices_df
 
     def listdir(self):
+        """
+        List all files in `self.data_path` folder.
+        """
         files = set(os.listdir(self.data_path))
         if self.acc_zipfile:
             files |= set(self.acc_zipfile.namelist())
@@ -75,12 +86,13 @@ class M5Data:
             files |= set(self.unc_zipfile.namelist())
         return files
 
-    def read_csv(self, filename, index_col=None):
+    def _read_csv(self, filename, index_col=None, use_acc_file=True):
         """
         Returns the dataframe from csv file ``filename``.
 
         :param str filename: name of the file with trailing `.csv`.
         :param int index_col: indicates which column from csv file is considered as index.
+        :param bool acc_file: whether to load data from accuracy.zip file or uncertainty.zip file.
         """
         assert filename.endswith(".csv")
         if filename not in self.listdir():
@@ -88,7 +100,7 @@ class M5Data:
                                     "or 'm5-forecasting-accuracy.zip' file "
                                     f"in '{self.data_path}'.")
 
-        if self.acc_zipfile and filename in self.acc_zipfile.namelist():
+        if use_acc_file and self.acc_zipfile and filename in self.acc_zipfile.namelist():
             return pd.read_csv(self.acc_zipfile.open(filename), index_col=index_col)
 
         if self.unc_zipfile and filename in self.unc_zipfile.namelist():
@@ -192,7 +204,7 @@ class M5Data:
         for level in self.aggregation_levels:
             xs.append(self.get_aggregated_sales(**level))
         xs = torch.cat(xs, 0)
-        assert xs.shape[0] == 42840
+        assert xs.shape[0] == self.num_aggregations
         return xs
 
     @property
@@ -218,23 +230,42 @@ class M5Data:
     def make_accuracy_submission(self, filename, prediction):
         """
         Makes submission file given prediction result.
+
+        :param str filename: name of the submission file.
+        :param torch.Tensor predicition: the prediction tensor with shape `num_items x 28`.
         """
-        submission_df = self.read_csv("sample_submission.csv", index_col=0)
+        df = self._read_csv("sample_submission.csv", index_col=0)
         if torch.is_tensor(prediction):
             prediction = prediction.detach().cpu().numpy()
         assert isinstance(prediction, np.ndarray)
         assert prediction.shape == (self.num_items, 28)
-        submission_df.iloc[:self.num_items, :] = prediction
-        submission_df.to_csv(filename)
+        # the later 28 days only available 1 month before the deadline
+        assert df.shape[0] == prediction.shape[0] * 2
+        df.iloc[:prediction.shape[0], :] = prediction
+        df.to_csv(filename)
 
-    def make_uncertainty_submission(self, filename, median, quantile_50,
-                                    quantile_67, quantile_95, quantile_99):
+    def make_uncertainty_submission(self, filename, prediction):
         """
-        Each median is a dict of {level: value}
+        Makes submission file given prediction result.
+
+        :param str filename: name of the submission file.
+        :param torch.Tensor predicition: the prediction tensor with shape
+            `9 x num_aggregations x 28`. The first dimension indicates
+            9 quantiles defined in `self.quantiles`. The second dimension
+            indicates aggreated series defined in `self.aggregation_levels`,
+            with corresponding order. This is also the order of
+            submission file.
         """
-        # TODO: arrange uncertainty in correct rows
-        # avoid duplicated `sample_submission.csv` filename
-        pass
+        df = self._read_csv("sample_submission.csv", index_col=0, use_acc_file=False)
+        if torch.is_tensor(prediction):
+            prediction = prediction.detach().cpu().numpy()
+        assert isinstance(prediction, np.ndarray)
+        assert prediction.shape == (9, self.num_aggregations, 28)
+        prediction = prediction.reshape(-1, 28)
+        # the later 28 days only available 1 month before the deadline
+        assert df.shape[0] == prediction.shape[0] * 2
+        df.iloc[:prediction.shape[0], :] = prediction
+        df.to_csv(filename)
 
 
 class BatchDataLoader:
