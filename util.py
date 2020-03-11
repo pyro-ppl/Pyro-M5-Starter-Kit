@@ -27,11 +27,45 @@ class M5Data:
         self.acc_zipfile = zipfile.ZipFile(acc_path) if os.path.exists(acc_path) else None
         self.unc_zipfile = zipfile.ZipFile(unc_path) if os.path.exists(unc_path) else None
 
-        sale_df = self.load_file("sales_train_validation.csv", index_col=0)
-        self.index = sale_df.index
-        self.num_items = sale_df.shape[0]
-        self.num_days = sale_df.shape[1] - 5 + 2 * 28
-        self.num_items_by_state = sale_df["state_id"].value_counts().to_dict()
+        self._sales_df = None
+        self._calendar_df = None
+        self._prices_df = None
+
+    @property
+    def num_items(self):
+        return self.sales_df.shape[0]
+
+    @property
+    def num_days(self):
+        return self.sales_df.shape[1] - 5 + 2 * 28
+
+    @property
+    def num_items_by_state(self):
+        return self.sales_df["state_id"].value_counts().to_dict()
+
+    @property
+    def event_types(self):
+        return ["Cultural", "National", "Religious", "Sporting"]
+
+    @property
+    def sales_df(self):
+        if self._sales_df is None:
+            self._sales_df = self.read_csv("sales_train_validation.csv", index_col=0)
+        return self._sales_df
+
+    @property
+    def calendar_df(self):
+        if self._calendar_df is None:
+            self._calendar_df = self.read_csv("calendar.csv", index_col=0)
+        return self._calendar_df
+
+    @property
+    def prices_df(self):
+        if self._prices_df is None:
+            df = self.read_csv("sell_prices.csv")
+            df["id"] = df.item_id + "_" + df.store_id + "_validation"
+            self._prices_df = df
+        return self._prices_df
 
     def listdir(self):
         files = set(os.listdir(self.data_path))
@@ -41,7 +75,7 @@ class M5Data:
             files |= set(self.unc_zipfile.namelist())
         return files
 
-    def load_file(self, filename, index_col=None):
+    def read_csv(self, filename, index_col=None):
         """
         Returns the dataframe from csv file ``filename``.
 
@@ -62,22 +96,13 @@ class M5Data:
 
         return pd.read_csv(os.path.join(self.data_path, filename), index_col=index_col)
 
-    def load_calendar(self):
-        """
-        Returns `calendar` dataframe.
-        """
-        df = self.load_file("calendar.csv", index_col=0)
-        assert df.shape[0] == self.num_days
-        return df
-
-    def load_sales_tensor(self):
+    def get_sales(self):
         """
         Returns `sales` torch.Tensor with shape `num_items x num_train_days`.
         """
-        df = self.load_file("sales_train_validation.csv", index_col=0)
-        return torch.from_numpy(df.iloc[:, 5:].values).type(torch.get_default_dtype())
+        return torch.from_numpy(self.sales_df.iloc[:, 5:].values).type(torch.get_default_dtype())
 
-    def load_prices_tensor(self, fillna=0.):
+    def get_prices(self, fillna=0.):
         """
         Returns `prices` torch.Tensor with shape `num_items x num_days`.
 
@@ -85,31 +110,67 @@ class M5Data:
 
         :param float fillna: a float value to replace NaN. Defaults to 0.
         """
-        df = self.load_file("sell_prices.csv")
-        df["id"] = df.item_id + "_" + df.store_id + "_validation"
-        df = pd.pivot_table(df, values="sell_price", index="id", columns="wm_yr_wk").fillna(fillna)
-        df = df.loc[self.index]
+        df = pd.pivot_table(self.prices_df, values="sell_price", index="id", columns="wm_yr_wk")
+        df = df.fillna(fillna).loc[self.sales_df.index]
         x = torch.from_numpy(df.values).type(torch.get_default_dtype())
         x = x.repeat_interleave(7, dim=-1)[:, :-5]  # last week only includes 2 days
         assert x.shape == (self.num_items, self.num_days)
         return x
 
-    def load_snap_tensor(self):
+    def get_snap(self):
         """
-        Returns a boolean tensor which indicating whether SNAP purchases are allowed.
+        Returns a `3 x num_days` boolean tensor which indicates whether
+        SNAP purchases are allowed at a state in a particular day. The order
+        of the first dimension indicates the states "CA", "TX", "WI" respectively.
+
+        Usage::
+
+            >>> m5 = M5Data()
+            >>> snap = m5.get_snap_tensor()
+            >>> assert snap.shape == (3, m5.num_days)
+            >>> n = m5.num_items_by_state
+            >>> snap = snap.repeat_interleave(torch.tensor([n["CA"], n["TX"], n["WI"]]), dim=0)
+            >>> assert snap.shape == (m5.num_items, m5.num_days)
         """
-        df = self.load_calendar()
-        x = torch.from_numpy(df[["snap_CA", "snap_TX", "snap_WI"]].T.values)
-        d = self.num_items_by_state
-        x = x.repeat_interleave(torch.tensor([d["CA"], d["TX"], d["WI"]]), dim=0)
-        assert x.shape == (self.num_items, self.num_days)
+        x = torch.from_numpy(self.calendar_df[["snap_CA", "snap_TX", "snap_WI"]].T.values)
+        assert x.shape == (3, self.num_days)
         return x
 
-    def load_aggregated_tensor(self, state=False, store=False, category=False, department=False):
+    def get_event(self, by_types=False):
+        """
+        Returns a tensor with length `num_days` indicating whether there are
+        special events on a particular day.
+
+        There are 4 types of events: "Cultural", "National", "Religious", "Sporting".
+
+        :param bool by_types: if True, returns a `num_days x 4` tensor indicating
+            special event by type. Otherwise, only returns a 1D tensor indicating
+            whether there is a special event.
+        """
+        if not by_types:
+            return torch.from_numpy(self.calendar_df["event_type_1"].notnull().values)
+
+        types = self.event_types
+        event1 = pd.get_dummies(self.calendar_df["event_type_1"])[types].astype(bool)
+        event2 = pd.DataFrame(columns=types)
+        types2 = ["Cultural", "Religious"]
+        event2[types2] = pd.get_dummies(self.calendar_df["event_type_2"])[types2].astype(bool)
+        event2.fillna(False, inplace=True)
+        return torch.from_numpy(event1.values | event2.values)
+
+    def get_christmas(self):
+        """
+        Returns a boolean 1D tensor with length `num_days` indicating if that day is
+        Chrismas.
+        """
+        return torch.from_numpy(self.get_calendar_df().index.str.endswith("12-25"))
+
+    def get_aggregated_tensor(self, state=False, store=False, category=False, department=False):
         """
         Returns aggregated sales.
         """
         # TODO: aggregate and return correct index
+        pass
 
     def aggregation_levels(self):
         """
@@ -134,12 +195,12 @@ class M5Data:
         """
         Makes submission file given prediction result.
         """
-        submission_df = self.load_file("sample_submission.csv", index_col=0)
+        submission_df = self.read_csv("sample_submission.csv", index_col=0)
         if torch.is_tensor(prediction):
             prediction = prediction.detach().cpu().numpy()
         assert isinstance(prediction, np.ndarray)
-        assert prediction.shape == (submission_df.shape[0] // 2, 28)
-        submission_df.iloc[:prediction.shape[0], :] = prediction
+        assert prediction.shape == (self.num_items, 28)
+        submission_df.iloc[:self.num_items, :] = prediction
         submission_df.to_csv(filename)
 
     def make_uncertainty_submission(self, filename, median, quantile_50,
