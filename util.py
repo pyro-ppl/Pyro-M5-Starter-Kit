@@ -1,3 +1,6 @@
+# Copyright Contributors to the Pyro project.
+# SPDX-License-Identifier: Apache-2.0
+
 import math
 import os
 import zipfile
@@ -8,6 +11,12 @@ import torch
 
 
 class M5Data:
+    """
+    A helper class to read M5 source files and create submissions.
+
+    :param str data_path: Path to the folder that contains M5 data files, which is
+    either a single `.zip` file or some `.csv` files extracted from that zip file.
+    """
     def __init__(self, data_path=None):
         self.data_path = os.path.abspath("data") if data_path is None else data_path
         if not os.path.exists(self.data_path):
@@ -141,6 +150,15 @@ class M5Data:
 
 
 class BatchDataLoader:
+    """
+    DataLoader class which iterates over the dataset (data_x, data_y) in batch.
+
+    Usage::
+
+        >>> data_loader = BatchDataLoader(data_x, data_y, batch_size=1000)
+        >>> for batch_x, batch_y in data_loader:
+        ...     # do something with batch_x, batch_y
+    """
     def __init__(self, data_x, data_y, batch_size, shuffle=True):
         super().__init__()
         self.data_x = data_x
