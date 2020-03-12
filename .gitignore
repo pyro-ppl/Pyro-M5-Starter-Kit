@@ -1,7 +1,3 @@
-data/
-!data/README.md
-.vscode/
-
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
@@ -133,4 +129,7 @@ dmypy.json
 .pyre/
 
 # Custom
-/data
+data/*
+!data/README.md
+.vscode/
+
