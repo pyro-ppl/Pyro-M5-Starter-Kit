@@ -57,7 +57,7 @@ DEFAULT_METRICS = {
 }
 
 
-def get_metric_scale(metric, train_data):
+def _get_metric_scale(metric, train_data):
     lag1 = train_data[..., 1:, :] - train_data[..., :-1, :]
     # drop starting 0s
     actual_length = (train_data.sum(-1).cumsum(-1) != 0).sum(-1)
@@ -65,6 +65,12 @@ def get_metric_scale(metric, train_data):
         return lag1.pow(2).mean(-1).sum(-1).div(actual_length - 1).sqrt()
     else:
         return lag1.abs().mean(-1).sum(-1).div(actual_length - 1)
+
+
+@torch.no_grad()
+def eval_weighted_scale(metric, value, train_data, weight):
+    scale = _get_metric_scale(metric, train_data)
+    return (weight * value / scale).sum().cpu().item()
 
 
 def m5_backtest(data, covariates, model_fn, weight=None, **kwargs):
@@ -102,7 +108,6 @@ def m5_backtest(data, covariates, model_fn, weight=None, **kwargs):
         weight = weight[window["t1"] - 1]
 
         for metric in kwargs["metrics"].keys():
-            scale = get_metric_scale(metric, train_data)
-            window[f"ws_{metric}"] = (weight * window[metric] / scale).sum().cpu().item()
+            window[f"ws_{metric}"] = eval_weighted_scale(metric, window[metric], train_data, weight)
 
     return windows
