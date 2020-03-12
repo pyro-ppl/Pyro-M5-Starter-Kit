@@ -3,10 +3,19 @@
 
 import torch
 
-from pyro.contrib.forecast.evaluate import backtest, eval_crps, eval_mae, logger
-from pyro.ops.stats import quantile
+from pyro.contrib.forecast.evaluate import backtest, logger
+from pyro.ops.stats import crps_empirical, quantile
 
 from util import M5Data
+
+
+@torch.no_grad()
+def eval_mae(pred, truth):
+    """
+    Like pyro.contrib.forecast.eval_mae but does not average over batch dimensions.
+    """
+    pred = pred.median(0).values
+    return (pred - truth).abs().reshape(truth.shape[:-2] + (-1,)).mean(-1)
 
 
 @torch.no_grad()
@@ -17,6 +26,14 @@ def eval_rmse(pred, truth):
     pred = pred.mean(0)
     error = pred - truth
     return (error * error).reshape(truth.shape[:-2] + (-1,)).mean(-1).sqrt()
+
+
+@torch.no_grad()
+def eval_crps(pred, truth):
+    """
+    Like pyro.contrib.forecast.eval_crps but does not average over batch dimensions.
+    """
+    return crps_empirical(pred, truth).reshape(truth.shape[:-2] + (-1,)).mean(-1)
 
 
 @torch.no_grad()
@@ -40,20 +57,14 @@ DEFAULT_METRICS = {
 }
 
 
-def eval_wrmsse(raw_value, train_data, weight):
+def get_metric_scale(metric, train_data):
     lag1 = train_data[..., 1:, :] - train_data[..., :-1, :]
     # drop starting 0s
     actual_length = (train_data.sum(-1).cumsum(-1) != 0).sum(-1)
-    scale = lag1.pow(2).mean(-1).sum(-1).div(actual_length - 1).sqrt()
-    return (weight * raw_value / scale).sum().cpu().item()
-
-
-def eval_wspl(raw_value, train_data, weight):
-    lag1 = train_data[..., 1:, :] - train_data[..., :-1, :]
-    # drop starting 0s
-    actual_length = (train_data.sum(-1).cumsum(-1) != 0).sum(-1)
-    scale = lag1.abs().mean(-1).sum(-1).div(actual_length - 1)
-    return (weight * raw_value / scale).sum().cpu().item()
+    if metric == "rmse":
+        return lag1.pow(2).mean(-1).sum(-1).div(actual_length - 1).sqrt()
+    else:
+        return lag1.abs().mean(-1).sum(-1).div(actual_length - 1)
 
 
 def m5_backtest(data, covariates, model_fn, weight=None, **kwargs):
@@ -90,10 +101,8 @@ def m5_backtest(data, covariates, model_fn, weight=None, **kwargs):
         train_data = data[..., :window["t1"], :]
         weight = weight[window["t1"] - 1]
 
-        if "rmse" in window:
-            window["wrmsse"] = eval_wrmsse(window["rmse"], train_data, weight)
-
-        if "pl" in window:
-            window["wspl"] = eval_wspl(window["pl"], train_data, weight)
+        for metric in kwargs["metrics"].keys():
+            scale = get_metric_scale(metric, train_data)
+            window[f"ws_{metric}"] = (weight * window[metric] / scale).sum().cpu().item()
 
     return windows
