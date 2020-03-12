@@ -15,8 +15,10 @@ class M5Data:
     A helper class to read M5 source files and create submissions.
 
     :param str data_path: Path to the folder that contains M5 data files, which is
-    either a single `.zip` file or some `.csv` files extracted from that zip file.
+        either a single `.zip` file or some `.csv` files extracted from that zip file.
     """
+    quantiles = [0.005, 0.025, 0.165, 0.25, 0.5, 0.75, 0.835, 0.975, 0.995]
+
     def __init__(self, data_path=None):
         self.data_path = os.path.abspath("data") if data_path is None else data_path
         if not os.path.exists(self.data_path):
@@ -38,10 +40,6 @@ class M5Data:
     @property
     def num_aggregations(self):
         return 42840
-
-    @property
-    def quantiles(self):
-        return [0.005, 0.025, 0.165, 0.25, 0.5, 0.75, 0.835, 0.975, 0.995]
 
     @property
     def num_days(self):
@@ -179,7 +177,9 @@ class M5Data:
 
     def get_aggregated_sales(self, state=True, store=True, cat=True, dept=True, item=True):
         """
-        Returns aggregated sales.
+        Returns aggregated sales and dollar sales at a particular aggregation level.
+
+        .. note:: Dollar sales can be used as weights of evaluation metrics.
         """
         groups = []
         if not state:
@@ -193,6 +193,7 @@ class M5Data:
         if not item:
             groups.append("item_id")
 
+        # TODO: merge with prices to compute dollar sales
         if len(groups) > 0:
             x = self.sales_df.groupby(groups).sum().values
         else:
@@ -200,6 +201,9 @@ class M5Data:
         return torch.from_numpy(x).type(torch.get_default_dtype())
 
     def get_all_aggregated_sales(self):
+        """
+        Returns aggregated sales and dollar sales for all aggregation levels.
+        """
         xs = []
         for level in self.aggregation_levels:
             xs.append(self.get_aggregated_sales(**level))
