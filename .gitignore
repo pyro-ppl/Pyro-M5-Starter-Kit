@@ -1,4 +1,5 @@
 data/
+!data/README.md
 .vscode/
 
 # Byte-compiled / optimized / DLL files
