@@ -21,7 +21,7 @@ def eval_mae(pred, truth):
 @torch.no_grad()
 def eval_rmse(pred, truth):
     """
-    Like pyro.contrib.forecast.eval_rmae but does not average over batch dimensions.
+    Like pyro.contrib.forecast.eval_rmse but does not average over batch dimensions.
     """
     pred = pred.mean(0)
     error = pred - truth
