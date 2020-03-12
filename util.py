@@ -70,7 +70,8 @@ class M5Data:
         if self._prices_df is None:
             df = self._read_csv("sell_prices.csv")
             df["id"] = df.item_id + "_" + df.store_id + "_validation"
-            self._prices_df = df
+            df = pd.pivot_table(df, values="sell_price", index="id", columns="wm_yr_wk")
+            self._prices_df = df.fillna(0.).loc[self.sales_df.index]
         return self._prices_df
 
     def listdir(self):
@@ -120,10 +121,8 @@ class M5Data:
 
         :param float fillna: a float value to replace NaN. Defaults to 0.
         """
-        df = pd.pivot_table(self.prices_df, values="sell_price", index="id", columns="wm_yr_wk")
-        df = df.fillna(fillna).loc[self.sales_df.index]
-        x = torch.from_numpy(df.values).type(torch.get_default_dtype())
-        x = x.repeat_interleave(7, dim=-1)[:, :-5]  # last week only includes 2 days
+        x = torch.from_numpy(self.prices_df.values).type(torch.get_default_dtype())
+        x = x.repeat_interleave(7, dim=-1)[:, :self.calendar_df.shape[0]]
         assert x.shape == (self.num_items, self.num_days)
         return x
 
@@ -177,9 +176,7 @@ class M5Data:
 
     def get_aggregated_sales(self, state=True, store=True, cat=True, dept=True, item=True):
         """
-        Returns aggregated sales and dollar sales at a particular aggregation level.
-
-        .. note:: Dollar sales can be used as weights of evaluation metrics.
+        Returns aggregated sales at a particular aggregation level.
         """
         groups = []
         if not state:
@@ -193,20 +190,61 @@ class M5Data:
         if not item:
             groups.append("item_id")
 
-        # TODO: merge with prices to compute dollar sales
         if len(groups) > 0:
             x = self.sales_df.groupby(groups).sum().values
         else:
             x = self.sales_df.iloc[:, 5:].sum().values[None, :]
         return torch.from_numpy(x).type(torch.get_default_dtype())
 
+    def get_aggregated_ma_dollar_sales(self, state=True, store=True,
+                                       cat=True, dept=True, item=True):
+        """
+        Returns aggregated "moving average" dollar sales at a particular aggregation level
+        during the last 28 days.
+
+        The result can be used as `weight` for evaluation metrics.
+        """
+        groups = []
+        if not state:
+            groups.append("state_id")
+        if not store:
+            groups.append("store_id")
+        if not cat:
+            groups.append("cat_id")
+        if not dept:
+            groups.append("dept_id")
+        if not item:
+            groups.append("item_id")
+
+        prices = self.prices_df.values.repeat(7, axis=1)[:, :self.sales_df.shape[1] - 5]
+        df = (self.sales_df.iloc[:, 5:] * prices).T.rolling(28, min_periods=1).mean().T
+
+        if len(groups) > 0:
+            for g in groups:
+                df[g] = self.sales_df[g]
+            x = df.groupby(groups).sum().values
+        else:
+            x = df.sum().values[None, :]
+        return torch.from_numpy(x).type(torch.get_default_dtype())
+
     def get_all_aggregated_sales(self):
         """
-        Returns aggregated sales and dollar sales for all aggregation levels.
+        Returns aggregated sales for all aggregation levels.
         """
         xs = []
         for level in self.aggregation_levels:
             xs.append(self.get_aggregated_sales(**level))
+        xs = torch.cat(xs, 0)
+        assert xs.shape[0] == self.num_aggregations
+        return xs
+
+    def get_all_aggregated_ma_dollar_sales(self):
+        """
+        Returns aggregated "moving average" dollar sales for all aggregation levels.
+        """
+        xs = []
+        for level in self.aggregation_levels:
+            xs.append(self.get_aggregated_ma_dollar_sales(**level))
         xs = torch.cat(xs, 0)
         assert xs.shape[0] == self.num_aggregations
         return xs

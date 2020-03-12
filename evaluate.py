@@ -57,21 +57,23 @@ DEFAULT_METRICS = {
 }
 
 
-def get_pl_scale(data):
-    lag1 = data[..., 1:, :] - data[..., :-1, :]
+def eval_wrmsse(raw_value, train_data, weight):
+    lag1 = train_data[..., 1:, :] - train_data[..., :-1, :]
     # drop starting 0s
-    actual_length = (data.cumsum(-2) != 0).sum(-2) - 1
-    return lag1.abs().sum(-2).div(actual_length)
+    actual_length = (train_data.cumsum(-2) != 0).sum(-2)
+    scale = lag1.pow(2).sum(-2).div(actual_length - 1).sqrt()
+    return (weight * raw_value / scale).sum().item()
 
 
-def get_rmse_scale(data):
-    lag1 = data[..., 1:, :] - data[..., :-1, :]
+def eval_wspl(raw_value, train_data, weight):
+    lag1 = train_data[..., 1:, :] - train_data[..., :-1, :]
     # drop starting 0s
-    actual_length = (data.cumsum(-2) != 0).sum(-2) - 1
-    return lag1.pow(2).sum(-2).div(actual_length).sqrt()
+    actual_length = (train_data.cumsum(-2) != 0).sum(-2)
+    scale = lag1.abs().sum(-2).div(actual_length - 1)
+    return (weight * raw_value / scale).sum().item()
 
 
-def backtest(data, covariates, model_fn, weight=torch.tensor(1.), **kwargs):
+def backtest(data, covariates, model_fn, weight=None, **kwargs):
     """
     Backtest function with weighted metrics. See
     http://docs.pyro.ai/en/stable/contrib.forecast.html#pyro.contrib.forecast.evaluate.backtest
@@ -81,9 +83,11 @@ def backtest(data, covariates, model_fn, weight=torch.tensor(1.), **kwargs):
         the average of the results at each aggregation level.
 
     :param torch.Tensor weight: weight of each time series in `data`.
-        This should satisfy `weight.shape == data.shape[:-2]`.
+        This should satisfy `weight.shape == data.shape[:-1]`.
     """
-    assert weight.shape == data.shape[:-2]
+    if weight is None:
+        weight = data.new_ones(data.shape[:-1])
+    assert weight.shape == data.shape[:-1]
     weight = weight / weight.sum()
 
     if kwargs.get("metrics") is None:
@@ -91,18 +95,13 @@ def backtest(data, covariates, model_fn, weight=torch.tensor(1.), **kwargs):
 
     windows = pyro_backtest(data, covariates, model_fn, **kwargs)
     for window in windows:
+        train_data = data[..., window["t0"]:window["t1"], :]
+        weight = weight[window["t1"] - 1]
+
         if "rmse" in window:
-            train_data = data[..., window["t0"]:window["t1"], :]
-            scale = get_rmse_scale(train_data)
-            rmsse = window["rmse"] / scale
-            assert rmsse.shape == weight.shape
-            window["wrmsse"] = (rmsse * weight).sum().item()
+            window["wrmsse"] = eval_wrmsse(window["rmse"], train_data, weight)
 
         if "pl" in window:
-            train_data = data[..., window["t0"]:window["t1"], :]
-            scale = get_pl_scale(train_data)
-            spl = window["pl"] / scale
-            assert spl.shape == weight.shape
-            window["wspl"] = (rmsse * weight).sum().item()
+            window["wspl"] = eval_wspl(window["pl"], train_data, weight)
 
     return windows
