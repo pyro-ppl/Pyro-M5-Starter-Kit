@@ -58,13 +58,15 @@ DEFAULT_METRICS = {
 
 
 def _get_metric_scale(metric, train_data):
-    lag1 = train_data[..., 1:, :] - train_data[..., :-1, :]
-    # drop starting 0s
-    actual_length = (train_data.sum(-1).cumsum(-1) != 0).sum(-1)
-    if metric == "rmse":
-        return lag1.pow(2).mean(-1).sum(-1).div(actual_length - 1).sqrt()
-    else:
-        return lag1.abs().mean(-1).sum(-1).div(actual_length - 1)
+    duration = train_data.shape[-2]
+    lag1 = train_data - torch.nn.functional.pad(train_data[..., :-1, :], (0, 0, 1, 0))
+    # find active time: to drop the leading 0s
+    active_time = (train_data.sum(-1, keepdims=True).cumsum(-2) != 0).sum(-2, keepdims=True)
+    start_value = train_data.gather(
+        -2, (duration - active_time).expand(active_time.shape[:-1] + train_data.shape[-1:]))
+    norm = 2 if metric == "rmse" else 1
+    lag1_norm = lag1.abs().pow(norm).sum(-2) - start_value.squeeze(-2).abs().pow(norm)
+    return lag1_norm.mean(-1).div(active_time.squeeze(-1).squeeze(-1) - 1).pow(1 / norm)
 
 
 @torch.no_grad()
