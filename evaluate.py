@@ -45,7 +45,7 @@ def eval_pl(pred, truth):
     pred = quantile(pred, probs=us, dim=0)  # 9 x batch_shape x duration x D
     error = pred - truth.unsqueeze(0)
     us = us.reshape((-1,) + (1,) * (pred.dim() - 1)).expand(pred.shape)
-    error = (torch.where(error <= 0, us, 1 - us) * error).mean(0)  # mean accross all quantiles
+    error = torch.where(error <= 0, -us, 1 - us).mul(error).mean(0)  # mean accross all quantiles
     return error.reshape(truth.shape[:-2] + (-1,)).mean(-1)
 
 

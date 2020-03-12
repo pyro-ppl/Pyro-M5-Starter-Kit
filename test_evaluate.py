@@ -24,6 +24,8 @@ def test_weighted_scale_metric(batch_shape, obs_dim, metric):
     num_samples = 7
     pred = torch.randn((num_samples,) + truth.shape).exp()
     value = DEFAULT_METRICS[metric](pred, truth)
+    assert value.shape == batch_shape
+    assert (value >= 0).all()
     actual = eval_weighted_scale(metric, value, train_data, weight)
     expected = eval_weighted_scale(metric, value, active_data, weight)
     assert actual == expected
