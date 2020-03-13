@@ -167,12 +167,34 @@ class M5Data:
         event2.fillna(False, inplace=True)
         return torch.from_numpy(event1.values | event2.values)
 
+    def get_dummy_day_of_month(self):
+        """
+        Returns dummy day of month tensor with shape `num_days x 31`.
+        """
+        dom = pd.get_dummies(pd.to_datetime(self.calendar_df.index).day).values
+        return torch.from_numpy(dom).type(torch.get_default_dtype())
+
+    def get_dummy_month_of_year(self):
+        """
+        Returns dummy month of year tensor with shape `num_days x 12`.
+        """
+        moy = pd.get_dummies(pd.to_datetime(self.calendar_df.index).month).values
+        return torch.from_numpy(moy).type(torch.get_default_dtype())
+
+    def get_dummy_day_of_week(self):
+        """
+        Returns dummy day of week tensor with shape `num_days x 7`.
+        """
+        dow = pd.get_dummies(self.calendar_df.wday).values
+        return torch.from_numpy(dow).type(torch.get_default_dtype())
+
     def get_christmas(self):
         """
         Returns a boolean 1D tensor with length `num_days` indicating if that day is
         Chrismas.
         """
-        return torch.from_numpy(self.get_calendar_df().index.str.endswith("12-25"))
+        christmas = self.calendar_df.index.str.endswith("12-25")
+        return torch.from_numpy(christmas).type(torch.get_default_dtype())
 
     def get_aggregated_sales(self, state=True, store=True, cat=True, dept=True, item=True):
         """
