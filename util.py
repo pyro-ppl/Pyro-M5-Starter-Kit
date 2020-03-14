@@ -229,7 +229,7 @@ class M5Data:
             groups.append("item_id")
 
         if len(groups) > 0:
-            x = self.sales_df.groupby(groups, sorted=False).sum().values
+            x = self.sales_df.groupby(groups, sort=False).sum().values
         else:
             x = self.sales_df.iloc[:, 5:].sum().values[None, :]
         return torch.from_numpy(x).type(torch.get_default_dtype())
@@ -260,7 +260,7 @@ class M5Data:
         if len(groups) > 0:
             for g in groups:
                 df[g] = self.sales_df[g]
-            x = df.groupby(groups, sorted=False).sum().values
+            x = df.groupby(groups, sort=False).sum().values
         else:
             x = df.sum().values[None, :]
         return torch.from_numpy(x).type(torch.get_default_dtype())
