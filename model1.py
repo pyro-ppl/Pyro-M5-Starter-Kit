@@ -41,7 +41,7 @@ from util import M5Data
 
 
 RESULTS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "results")
-RESULTS = os.environ.get("BART_RESULTS", RESULTS)
+RESULTS = os.environ.get("PYRO_M5_RESULTS", RESULTS)
 if not os.path.exists(RESULTS):
     os.makedirs(RESULTS)
 
@@ -179,6 +179,6 @@ if __name__ == "__main__":
 
     if args.output_file == "":
         args.output_file = os.path.join(
-            RESULTS, os.path.basename(__file__)[:-3] + ".csv" if args.submit else ".pkl")
+            RESULTS, os.path.basename(__file__)[:-3] + (".csv" if args.submit else ".pkl"))
 
     main(args)
