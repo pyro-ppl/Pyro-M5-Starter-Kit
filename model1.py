@@ -156,7 +156,7 @@ def main(args):
 
 
 if __name__ == "__main__":
-    assert pyro.__version__.startswith("1.3.0")
+    assert pyro.__version__ >= "1.3.0"
     parser = argparse.ArgumentParser(description="Univariate M5 daily forecasting")
     parser.add_argument("--num-windows", default=10, type=int)
     parser.add_argument("--test-window", default=28, type=int)
