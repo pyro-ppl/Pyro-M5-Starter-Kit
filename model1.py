@@ -96,18 +96,22 @@ def main(args):
     # get aggregated sales of all items from all Walmart stores
     data = m5.get_aggregated_sales(m5.aggregation_levels[0])[0].unsqueeze(-1)
     # apply log transform to scale down the data
-    data = data.log().to(args.device)
+    data = data.log()
 
     # we create covariates from dummy time features and special events
     T0 = 0                   # begining
     T2 = data.size(-2) + 28  # end + submission-interval
-    time = torch.arange(T0, float(T2)) / 365
+    time = torch.arange(T0, float(T2), device="cpu") / 365
     covariates = torch.cat([time.unsqueeze(-1),
                             m5.get_dummy_day_of_month()[T0:T2],
                             m5.get_dummy_month_of_year()[T0:T2],
                             m5.get_event()[T0:T2],
                             m5.get_christmas()[T0:T2],
                             ], dim=-1)
+
+    if args.cuda:
+        data = data.cuda()
+        covariates = covariates.cuda()
 
     forecaster_options = {
         "learning_rate": args.learning_rate,
@@ -123,7 +127,7 @@ def main(args):
         pyro.set_rng_seed(args.seed)
         forecaster = Forecaster(Model(), data, covariates[:-28], **forecaster_options)
         samples = forecaster(data, covariates, num_samples=1000).exp()
-        pred = samples.median(0).values.squeeze(-1)
+        pred = samples.median(0).values.squeeze(-1).cpu()
 
         # we use top-down approach to distribute the aggregated forecast sales `pred`
         # for each items at the bottom level;
@@ -163,11 +167,14 @@ if __name__ == "__main__":
     parser.add_argument("--log-every", default=100, type=int)
     parser.add_argument("--seed", default=1234567890, type=int)
     parser.add_argument("-o", "--output-file", default="", type=str)
-    parser.add_argument("--submit", action="store_true")
-    parser.add_argument("--device", default="cpu", type=str)
+    parser.add_argument("--submit", action="store_true", default=False)
+    parser.add_argument("--cuda", action="store_true", default=False)
     args = parser.parse_args()
 
-    if args.device == "gpu":
+    if args.cuda and not torch.cuda.is_available():
+        args.cuda = False
+
+    if args.cuda:
         torch.set_default_tensor_type(torch.cuda.FloatTensor)
 
     if args.output_file == "":
