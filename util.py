@@ -128,7 +128,7 @@ class M5Data:
 
     def get_snap(self):
         """
-        Returns a `3 x num_days` boolean tensor which indicates whether
+        Returns a `num_days x 3` boolean tensor which indicates whether
         SNAP purchases are allowed at a state in a particular day. The order
         of the first dimension indicates the states "CA", "TX", "WI" respectively.
 
@@ -141,8 +141,9 @@ class M5Data:
             >>> snap = snap.repeat_interleave(torch.tensor([n["CA"], n["TX"], n["WI"]]), dim=0)
             >>> assert snap.shape == (m5.num_items, m5.num_days)
         """
-        x = torch.from_numpy(self.calendar_df[["snap_CA", "snap_TX", "snap_WI"]].T.values)
-        assert x.shape == (3, self.num_days)
+        snap = self.calendar_df[["snap_CA", "snap_TX", "snap_WI"]].values
+        x = torch.from_numpy(snap).type(torch.get_default_dtype())
+        assert x.shape == (self.num_days, 3)
         return x
 
     def get_event(self, by_types=False):
@@ -153,11 +154,14 @@ class M5Data:
         There are 4 types of events: "Cultural", "National", "Religious", "Sporting".
 
         :param bool by_types: if True, returns a `num_days x 4` tensor indicating
-            special event by type. Otherwise, only returns a 1D tensor indicating
+            special event by type. Otherwise, only returns a `num_days x 1` tensor indicating
             whether there is a special event.
         """
         if not by_types:
-            return torch.from_numpy(self.calendar_df["event_type_1"].notnull().values)
+            event = self.calendar_df["event_type_1"].notnull().values[..., None]
+            x = torch.from_numpy(event).type(torch.get_default_dtype())
+            assert x.shape == (self.num_days, 1)
+            return x
 
         types = self.event_types
         event1 = pd.get_dummies(self.calendar_df["event_type_1"])[types].astype(bool)
@@ -165,40 +169,52 @@ class M5Data:
         types2 = ["Cultural", "Religious"]
         event2[types2] = pd.get_dummies(self.calendar_df["event_type_2"])[types2].astype(bool)
         event2.fillna(False, inplace=True)
-        return torch.from_numpy(event1.values | event2.values)
+        x = torch.from_numpy(event1.values | event2.values).type(torch.get_default_dtype())
+        assert x.shape == (self.num_days, 4)
+        return x
 
     def get_dummy_day_of_month(self):
         """
         Returns dummy day of month tensor with shape `num_days x 31`.
         """
         dom = pd.get_dummies(pd.to_datetime(self.calendar_df.index).day).values
-        return torch.from_numpy(dom).type(torch.get_default_dtype())
+        x = torch.from_numpy(dom).type(torch.get_default_dtype())
+        assert x.shape == (self.num_days, 31)
+        return x
 
     def get_dummy_month_of_year(self):
         """
         Returns dummy month of year tensor with shape `num_days x 12`.
         """
         moy = pd.get_dummies(pd.to_datetime(self.calendar_df.index).month).values
-        return torch.from_numpy(moy).type(torch.get_default_dtype())
+        x = torch.from_numpy(moy).type(torch.get_default_dtype())
+        assert x.shape == (self.num_days, 12)
+        return x
 
     def get_dummy_day_of_week(self):
         """
         Returns dummy day of week tensor with shape `num_days x 7`.
         """
         dow = pd.get_dummies(self.calendar_df.wday).values
-        return torch.from_numpy(dow).type(torch.get_default_dtype())
+        x = torch.from_numpy(dow).type(torch.get_default_dtype())
+        assert x.shape == (self.num_days, 7)
+        return x
 
     def get_christmas(self):
         """
         Returns a boolean 1D tensor with length `num_days` indicating if that day is
         Chrismas.
         """
-        christmas = self.calendar_df.index.str.endswith("12-25")
-        return torch.from_numpy(christmas).type(torch.get_default_dtype())
+        christmas = self.calendar_df.index.str.endswith("12-25")[..., None]
+        x = torch.from_numpy(christmas).type(torch.get_default_dtype())
+        assert x.shape == (self.num_days, 1)
+        return x
 
     def get_aggregated_sales(self, state=True, store=True, cat=True, dept=True, item=True):
         """
         Returns aggregated sales at a particular aggregation level.
+
+        The result will be a tensor with shape `num_timeseries x num_train_days`.
         """
         groups = []
         if not state:
