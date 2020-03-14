@@ -55,7 +55,7 @@ class Model(ForecastingModel):
 
         bias = pyro.sample("bias", dist.Normal(0, 10))
         # we will use the first covariate, i.e. time, to compute trend
-        trend_coef = pyro.sample("trend", dist.LogNormal(0, 1))
+        trend_coef = pyro.sample("trend", dist.LogNormal(-2, 1))
         trend = trend_coef * covariates[:, 0]
         # set prior of weights of the remaining covariates
         weight = pyro.sample("weight",
@@ -157,9 +157,9 @@ if __name__ == "__main__":
     parser.add_argument("--num-windows", default=10, type=int)
     parser.add_argument("--test-window", default=28, type=int)
     parser.add_argument("-s", "--stride", default=35, type=int)
-    parser.add_argument("-n", "--num-steps", default=2001, type=int)
-    parser.add_argument("-lr", "--learning-rate", default=0.03, type=float)
-    parser.add_argument("--clip-norm", default=50, type=float)
+    parser.add_argument("-n", "--num-steps", default=1001, type=int)
+    parser.add_argument("-lr", "--learning-rate", default=0.1, type=float)
+    parser.add_argument("--clip-norm", default=10., type=float)
     parser.add_argument("--log-every", default=100, type=int)
     parser.add_argument("--seed", default=1234567890, type=int)
     parser.add_argument("-o", "--output-file", default="", type=str)

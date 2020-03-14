@@ -57,7 +57,7 @@ DEFAULT_METRICS = {
 }
 
 
-def _get_metric_scale(metric, train_data):
+def get_metric_scale(metric, train_data):
     duration = train_data.shape[-2]
     lag1 = train_data - torch.nn.functional.pad(train_data[..., :-1, :], (0, 0, 1, 0))
     # find active time: to drop the leading 0s
@@ -71,7 +71,7 @@ def _get_metric_scale(metric, train_data):
 
 @torch.no_grad()
 def eval_weighted_scale(metric, value, train_data, weight):
-    scale = _get_metric_scale(metric, train_data)
+    scale = get_metric_scale(metric, train_data)
     return (weight * value / scale).sum().cpu().item()
 
 
@@ -80,6 +80,9 @@ def m5_backtest(data, covariates, model_fn, weight=None, **kwargs):
     Backtest function with weighted metrics. See
     http://docs.pyro.ai/en/stable/contrib.forecast.html#pyro.contrib.forecast.evaluate.backtest
     for more information.
+
+    If `data` is transformed from a raw timeseries, make sure that a keyword `transform` is
+    provided to transform the prediction back to the original scale.
 
     .. note:: In M5 competition, joint result for all aggregation levels is
         the average of the results at each aggregation level.
