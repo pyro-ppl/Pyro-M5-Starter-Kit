@@ -102,14 +102,17 @@ def m5_backtest(data, covariates, model_fn, weight=None, **kwargs):
                     "to be able to compute scaled metrics.")
         kwargs["min_train_window"] = min_train_window
 
+    transform = kwargs.get("transform")
+    raw_data = data if transform is None else transform(data, data)[0]
+
     windows = backtest(data, covariates, model_fn, **kwargs)
     for window in windows:
         # we use all historical data before t1 to compute
         # the scale factor of wrmsse and wspl
-        train_data = data[..., :window["t1"], :]
-        weight = weight[window["t1"] - 1]
+        train_data = raw_data[..., :window["t1"], :]
+        w = weight[window["t1"] - 1]
 
         for metric in kwargs["metrics"].keys():
-            window[f"ws_{metric}"] = eval_weighted_scale(metric, window[metric], train_data, weight)
+            window[f"ws_{metric}"] = eval_weighted_scale(metric, window[metric], train_data, w)
 
     return windows

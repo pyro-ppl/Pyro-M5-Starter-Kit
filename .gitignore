@@ -130,6 +130,7 @@ dmypy.json
 
 # Custom
 data/*
+results/
 !data/README.md
 .vscode/
 
