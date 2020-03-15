@@ -12,16 +12,12 @@ Using the top-down approach in [1], we first construct a model to predict
 the aggregated sales across all items. Then we will distribute the aggregated
 prediction to each product based on its total sales during the last 28 days.
 
-The model we use is a slight modification of the heavy-tailed model at [2]. We
-recommend to read that tutorial first for more explanation.
-
-The result will barely beat all benchmark models from the competition.
+The result matches the best benchmark model ESX from the competition.
 
 **References**
 
     1. Rob J Hyndman and George Athanasopoulos (2018), "Forecasting: Principles and Practice",
        (https://otexts.com/fpp2/top-down.html)
-    2. http://pyro.ai/examples/forecasting_ii.html#Heavy-tailed-modeling-with-LinearHMM
 """
 
 import argparse
@@ -30,10 +26,8 @@ import pickle
 
 import pyro
 import pyro.distributions as dist
-import pyro.poutine as poutine
 import torch
 from pyro.contrib.forecast import ForecastingModel, Forecaster
-from pyro.infer.reparam import LinearHMMReparam, StableReparam, SymmetricStableReparam
 from pyro.ops.tensor_utils import periodic_repeat
 
 from evaluate import m5_backtest
@@ -68,27 +62,15 @@ class Model(ForecastingModel):
         prediction = bias + trend + seasonal + (weight * covariates[:, 1:]).sum(-1)
         prediction = prediction.unsqueeze(-1)
 
-        # heavy-tailed modeling for the noise
-        init_dist = dist.Normal(0, 10).expand([1]).to_event(1)
-        timescale = pyro.sample("timescale", dist.LogNormal(0, 1))
-        trans_matrix = torch.exp(-1 / timescale)[..., None, None]
-        trans_scale = pyro.sample("trans_scale", dist.LogNormal(0, 1))
-        trans_dist = dist.Normal(0, trans_scale.unsqueeze(-1)).to_event(1)
-        obs_matrix = torch.tensor([[1.]])
+        # now, we are going to construct a heteroskedastic noise to account for
+        # the different scale depending on day of week.
+        dof = pyro.sample("dof", dist.Uniform(1, 10))
         with day_of_week_plate:
-            obs_scale = pyro.sample("obs_scale", dist.LogNormal(-2, 1))
-        obs_scale = periodic_repeat(obs_scale, duration, dim=-1)
-
-        stability = pyro.sample("stability", dist.Uniform(1, 2).expand([1]).to_event(1))
-        skew = pyro.sample("skew", dist.Uniform(-1, 1).expand([1]).to_event(1))
-        trans_dist = dist.Stable(stability, 0, trans_scale.unsqueeze(-1)).to_event(1)
-        obs_dist = dist.Stable(stability, skew, obs_scale.unsqueeze(-1)).to_event(1)
-        noise_dist = dist.LinearHMM(init_dist, trans_matrix, trans_dist,
-                                    obs_matrix, obs_dist, duration=duration)
-
-        rep = LinearHMMReparam(None, SymmetricStableReparam(), StableReparam())
-        with poutine.reparam(config={"residual": rep}):
-            self.predict(noise_dist, prediction)
+            noise_scale = pyro.sample("noise_scale", dist.LogNormal(-2, 1))
+        # repeat the scale for the whole duration
+        noise_scale = periodic_repeat(noise_scale, duration, dim=-1)
+        noise_dist = dist.StudentT(dof.unsqueeze(-1), 0, noise_scale.unsqueeze(-1))
+        self.predict(noise_dist, prediction)
 
 
 def main(args):
@@ -161,8 +143,8 @@ if __name__ == "__main__":
     parser.add_argument("--num-windows", default=10, type=int)
     parser.add_argument("--test-window", default=28, type=int)
     parser.add_argument("-s", "--stride", default=35, type=int)
-    parser.add_argument("-n", "--num-steps", default=1001, type=int)
-    parser.add_argument("-lr", "--learning-rate", default=0.1, type=float)
+    parser.add_argument("-n", "--num-steps", default=3001, type=int)
+    parser.add_argument("-lr", "--learning-rate", default=0.3, type=float)
     parser.add_argument("--clip-norm", default=10., type=float)
     parser.add_argument("--log-every", default=100, type=int)
     parser.add_argument("--seed", default=1234567890, type=int)
