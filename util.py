@@ -96,14 +96,14 @@ class M5Data:
         assert filename.endswith(".csv")
         if filename not in self.listdir():
             raise FileNotFoundError(f"Cannot find either '{filename}' "
-                                    "or 'm5-forecasting-accuracy.zip' file "
+                                    "or 'm5-forecasting-*.zip' file "
                                     f"in '{self.data_path}'.")
 
         if use_acc_file and self.acc_zipfile and filename in self.acc_zipfile.namelist():
             return pd.read_csv(self.acc_zipfile.open(filename), index_col=index_col)
 
         if self.unc_zipfile and filename in self.unc_zipfile.namelist():
-            return pd.read_csv(self.acc_zipfile.open(filename), index_col=index_col)
+            return pd.read_csv(self.unc_zipfile.open(filename), index_col=index_col)
 
         return pd.read_csv(os.path.join(self.data_path, filename), index_col=index_col)
 
