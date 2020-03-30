@@ -71,7 +71,7 @@ class M5Data:
             df = self._read_csv("sell_prices.csv")
             df["id"] = df.item_id + "_" + df.store_id + "_validation"
             df = pd.pivot_table(df, values="sell_price", index="id", columns="wm_yr_wk")
-            self._prices_df = df.fillna(0.).loc[self.sales_df.index]
+            self._prices_df = df.fillna(float('nan')).loc[self.sales_df.index]
         return self._prices_df
 
     def listdir(self):
@@ -122,6 +122,7 @@ class M5Data:
         :param float fillna: a float value to replace NaN. Defaults to 0.
         """
         x = torch.from_numpy(self.prices_df.values).type(torch.get_default_dtype())
+        x[torch.isnan(x)] = fillna
         x = x.repeat_interleave(7, dim=-1)[:, :self.calendar_df.shape[0]]
         assert x.shape == (self.num_items, self.num_days)
         return x

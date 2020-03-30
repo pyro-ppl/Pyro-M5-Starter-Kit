@@ -12,7 +12,7 @@ Using the top-down approach in [1], we first construct a model to predict
 the aggregated sales across all items. Then we will distribute the aggregated
 prediction to each product based on its total sales during the last 28 days.
 
-The result matches the best benchmark model ESX from the competition.
+The result is barely better than the best benchmark model ESX from the competition.
 
 **References**
 
@@ -44,31 +44,26 @@ class Model(ForecastingModel):
     def model(self, zero_data, covariates):
         assert zero_data.size(-1) == 1  # univariate
         duration = zero_data.size(-2)
-        feature_dim = covariates.size(-1)
-        day_of_week_plate = pyro.plate("day_of_week", 7, dim=-1)
+        time, feature = covariates[..., 0], covariates[..., 1:]
 
         bias = pyro.sample("bias", dist.Normal(0, 10))
-        # we will use the first covariate, i.e. time, to compute trend
         trend_coef = pyro.sample("trend", dist.LogNormal(-2, 1))
-        trend = trend_coef * covariates[:, 0]
+        trend = trend_coef * time
         # set prior of weights of the remaining covariates
         weight = pyro.sample("weight",
-                             dist.Normal(0, 1).expand([feature_dim - 1]).to_event(1))
+                             dist.Normal(0, 1).expand([feature.size(-1)]).to_event(1))
+        regressor = (weight * feature).sum(-1)
         # encode weekly seasonality
-        with day_of_week_plate:
+        with pyro.plate("day_of_week", 7, dim=-1):
             seasonal = pyro.sample("seasonal", dist.Normal(0, 5))
         seasonal = periodic_repeat(seasonal, duration, dim=-1)
 
-        prediction = bias + trend + seasonal + (weight * covariates[:, 1:]).sum(-1)
+        prediction = bias + trend + seasonal + regressor
         prediction = prediction.unsqueeze(-1)
 
-        # now, we are going to construct a heteroskedastic noise to account for
-        # the different scale depending on day of week.
+        # now, we will use heavy tail noise
         dof = pyro.sample("dof", dist.Uniform(1, 10))
-        with day_of_week_plate:
-            noise_scale = pyro.sample("noise_scale", dist.LogNormal(-2, 1))
-        # repeat the scale for the whole duration
-        noise_scale = periodic_repeat(noise_scale, duration, dim=-1)
+        noise_scale = pyro.sample("noise_scale", dist.LogNormal(-2, 1))
         noise_dist = dist.StudentT(dof.unsqueeze(-1), 0, noise_scale.unsqueeze(-1))
         self.predict(noise_dist, prediction)
 
@@ -80,16 +75,14 @@ def main(args):
     # apply log transform to scale down the data
     data = data.log()
 
-    # we create covariates from dummy time features and special events
     T0 = 0                   # begining
     T2 = data.size(-2) + 28  # end + submission-interval
     time = torch.arange(T0, float(T2), device="cpu") / 365
-    covariates = torch.cat([time.unsqueeze(-1),
-                            m5.get_dummy_day_of_month()[T0:T2],
-                            m5.get_dummy_month_of_year()[T0:T2],
-                            m5.get_event()[T0:T2],
-                            m5.get_christmas()[T0:T2],
-                            ], dim=-1)
+    covariates = torch.cat([
+        time.unsqueeze(-1),
+        # we will use dummy days of month (1, 2, ..., 31) as feature
+        m5.get_dummy_day_of_month()[T0:T2],
+    ], dim=-1)
 
     if args.cuda:
         data = data.cuda()
@@ -97,6 +90,7 @@ def main(args):
 
     forecaster_options = {
         "learning_rate": args.learning_rate,
+        "learning_rate_decay": args.learning_rate_decay,
         "clip_norm": args.clip_norm,
         "num_steps": args.num_steps,
         "log_every": args.log_every,
@@ -109,7 +103,7 @@ def main(args):
         pyro.set_rng_seed(args.seed)
         forecaster = Forecaster(Model(), data, covariates[:-28], **forecaster_options)
         samples = forecaster(data, covariates, num_samples=1000).exp()
-        pred = samples.median(0).values.squeeze(-1).cpu()
+        pred = samples.mean(0).squeeze(-1).cpu()
 
         # we use top-down approach to distribute the aggregated forecast sales `pred`
         # for each items at the bottom level;
@@ -140,14 +134,15 @@ def main(args):
 if __name__ == "__main__":
     assert pyro.__version__ >= "1.3.0"
     parser = argparse.ArgumentParser(description="Univariate M5 daily forecasting")
-    parser.add_argument("--num-windows", default=10, type=int)
+    parser.add_argument("--num-windows", default=3, type=int)
     parser.add_argument("--test-window", default=28, type=int)
     parser.add_argument("-s", "--stride", default=35, type=int)
-    parser.add_argument("-n", "--num-steps", default=3001, type=int)
-    parser.add_argument("-lr", "--learning-rate", default=0.3, type=float)
+    parser.add_argument("-n", "--num-steps", default=1001, type=int)
+    parser.add_argument("-lr", "--learning-rate", default=0.1, type=float)
+    parser.add_argument("--learning-rate-decay", default=0.1, type=float)
     parser.add_argument("--clip-norm", default=10., type=float)
     parser.add_argument("--log-every", default=100, type=int)
-    parser.add_argument("--seed", default=1234567890, type=int)
+    parser.add_argument("--seed", default=1, type=int)
     parser.add_argument("-o", "--output-file", default="", type=str)
     parser.add_argument("--submit", action="store_true", default=False)
     parser.add_argument("--cuda", action="store_true", default=False)
@@ -160,7 +155,7 @@ if __name__ == "__main__":
         torch.set_default_tensor_type(torch.cuda.FloatTensor)
 
     if args.output_file == "":
-        args.output_file = os.path.join(
-            RESULTS, os.path.basename(__file__)[:-3] + (".csv" if args.submit else ".pkl"))
+        args.output_file = os.path.basename(__file__)[:-3] + (".csv" if args.submit else ".pkl")
+    args.output_file = os.path.join(RESULTS, args.output_file)
 
     main(args)
