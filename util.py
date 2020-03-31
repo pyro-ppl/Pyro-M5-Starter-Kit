@@ -71,7 +71,7 @@ class M5Data:
             df = self._read_csv("sell_prices.csv")
             df["id"] = df.item_id + "_" + df.store_id + "_validation"
             df = pd.pivot_table(df, values="sell_price", index="id", columns="wm_yr_wk")
-            self._prices_df = df.fillna(0.).loc[self.sales_df.index]
+            self._prices_df = df.fillna(float('nan')).loc[self.sales_df.index]
         return self._prices_df
 
     def listdir(self):
@@ -122,6 +122,7 @@ class M5Data:
         :param float fillna: a float value to replace NaN. Defaults to 0.
         """
         x = torch.from_numpy(self.prices_df.values).type(torch.get_default_dtype())
+        x[torch.isnan(x)] = fillna
         x = x.repeat_interleave(7, dim=-1)[:, :self.calendar_df.shape[0]]
         assert x.shape == (self.num_items, self.num_days)
         return x
@@ -210,57 +211,58 @@ class M5Data:
         assert x.shape == (self.num_days, 1)
         return x
 
-    def get_aggregated_sales(self, state=True, store=True, cat=True, dept=True, item=True):
+    def aggregate_samples(self, samples, level):
+        """
+        Aggregates samples (at the lowest level) to a specific level.
+
+        :param torch.Tensor samples: a tensor with shape `num_samples x num_timeseries x num_days`
+        :returns: a tensor with shape `num_samples x num_aggregated_timeseries x num_days`.
+        """
+        assert samples.dim() == 3
+        assert samples.size(1) == self.sales_df.shape[0]
+        assert torch.is_tensor(samples)
+        if len(level) == 0:
+            return samples.sum(1, keepdim=True)
+
+        df = self.sales_df.iloc[:, :5]
+        num_days = samples.size(-1)
+        x = samples.permute(1, 2, 0).numpy()
+        for i in range(num_days):
+            df[f"F{i+1}"] = list(x[:, i])
+        df = df.groupby(level, sort=False)[[f"F{i+1}" for i in range(num_days)]].agg(
+                lambda x: [np.array(x).sum(0)])
+        x = samples.new_tensor(df.values.tolist()).squeeze(-2).permute(2, 0, 1)
+        assert x.dim() == 3
+        assert x.size(0) == samples.size(0)
+        assert x.size(2) == samples.size(2)
+        return x
+
+    def get_aggregated_sales(self, level):
         """
         Returns aggregated sales at a particular aggregation level.
 
         The result will be a tensor with shape `num_timeseries x num_train_days`.
         """
-        groups = []
-        if not state:
-            groups.append("state_id")
-        if not store:
-            groups.append("store_id")
-        if not cat:
-            groups.append("cat_id")
-        if not dept:
-            groups.append("dept_id")
-        if not item:
-            groups.append("item_id")
-
-        if len(groups) > 0:
-            x = self.sales_df.groupby(groups, sort=False).sum().values
+        if len(level) > 0:
+            x = self.sales_df.groupby(level, sort=False).sum().values
         else:
             x = self.sales_df.iloc[:, 5:].sum().values[None, :]
         return torch.from_numpy(x).type(torch.get_default_dtype())
 
-    def get_aggregated_ma_dollar_sales(self, state=True, store=True,
-                                       cat=True, dept=True, item=True):
+    def get_aggregated_ma_dollar_sales(self, level):
         """
         Returns aggregated "moving average" dollar sales at a particular aggregation level
         during the last 28 days.
 
         The result can be used as `weight` for evaluation metrics.
         """
-        groups = []
-        if not state:
-            groups.append("state_id")
-        if not store:
-            groups.append("store_id")
-        if not cat:
-            groups.append("cat_id")
-        if not dept:
-            groups.append("dept_id")
-        if not item:
-            groups.append("item_id")
-
         prices = self.prices_df.values.repeat(7, axis=1)[:, :self.sales_df.shape[1] - 5]
         df = (self.sales_df.iloc[:, 5:] * prices).T.rolling(28, min_periods=1).mean().T
 
-        if len(groups) > 0:
-            for g in groups:
+        if len(level) > 0:
+            for g in level:
                 df[g] = self.sales_df[g]
-            x = df.groupby(groups, sort=False).sum().values
+            x = df.groupby(level, sort=False).sum().values
         else:
             x = df.sum().values[None, :]
         return torch.from_numpy(x).type(torch.get_default_dtype())
@@ -271,7 +273,7 @@ class M5Data:
         """
         xs = []
         for level in self.aggregation_levels:
-            xs.append(self.get_aggregated_sales(**level))
+            xs.append(self.get_aggregated_sales(level))
         xs = torch.cat(xs, 0)
         assert xs.shape[0] == self.num_aggregations
         return xs
@@ -282,7 +284,7 @@ class M5Data:
         """
         xs = []
         for level in self.aggregation_levels:
-            xs.append(self.get_aggregated_ma_dollar_sales(**level))
+            xs.append(self.get_aggregated_ma_dollar_sales(level))
         xs = torch.cat(xs, 0)
         assert xs.shape[0] == self.num_aggregations
         return xs
@@ -292,20 +294,18 @@ class M5Data:
         """
         Returns the list of all aggregation levels.
         """
-        return [
-            {"state": True,  "store": True,  "cat": True,  "dept": True,  "item": True},
-            {"state": False, "store": True,  "cat": True,  "dept": True,  "item": True},
-            {"state": True,  "store": False, "cat": True,  "dept": True,  "item": True},
-            {"state": True,  "store": True,  "cat": False, "dept": True,  "item": True},
-            {"state": True,  "store": True,  "cat": True,  "dept": False, "item": True},
-            {"state": False, "store": True,  "cat": False, "dept": True,  "item": True},
-            {"state": False, "store": True,  "cat": True,  "dept": False, "item": True},
-            {"state": True,  "store": False, "cat": False, "dept": True,  "item": True},
-            {"state": True,  "store": False, "cat": True,  "dept": False, "item": True},
-            {"state": True,  "store": True,  "cat": True,  "dept": True,  "item": False},
-            {"state": False, "store": True,  "cat": True,  "dept": True,  "item": False},
-            {"state": False, "store": False, "cat": False, "dept": False, "item": False},
-        ]
+        return [[],
+                ["state_id"],
+                ["store_id"],
+                ["cat_id"],
+                ["dept_id"],
+                ["state_id", "cat_id"],
+                ["state_id", "dept_id"],
+                ["store_id", "cat_id"],
+                ["store_id", "dept_id"],
+                ["item_id"],
+                ["state_id", "item_id"],
+                ["store_id", "item_id"]]
 
     def make_accuracy_submission(self, filename, prediction):
         """
