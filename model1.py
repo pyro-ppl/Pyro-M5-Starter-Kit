@@ -109,7 +109,7 @@ def main(args):
         # for each items at the bottom level;
         # the proportion is calculated based on the proportion of total sales of each time
         # during the last 28 days (this follows M5 guide's benchmark models)
-        sales_last28 = m5.get_aggregated_sales(**m5.aggregation_levels[-1])[:, -28:]
+        sales_last28 = m5.get_aggregated_sales(m5.aggregation_levels[-1])[:, -28:]
         proportion = sales_last28.sum(-1) / sales_last28.sum()
         prediction = proportion.ger(pred)
         m5.make_accuracy_submission(args.output_file, prediction)
