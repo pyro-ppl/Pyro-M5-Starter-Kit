@@ -17,7 +17,33 @@ class M5Data:
     :param str data_path: Path to the folder that contains M5 data files, which is
         either a single `.zip` file or some `.csv` files extracted from that zip file.
     """
+    num_states = 3
+    num_stores = 10
+    num_cats = 3
+    num_depts = 7
+    num_items = 3049
+    num_stores_by_state = [4, 3, 3]
+    num_depts_by_cat = [2, 2, 3]
+    num_items_by_cat = [565, 1047, 1437]
+    num_items_by_dept = [416, 149, 532, 515, 216, 398, 823]
+    num_timeseries = 30490  # store x item
+    num_aggregations = 42840
+    num_aggregations_by_level = [1, 3, 10, 3, 7, 9, 21, 30, 70, 3049, 9147, 30490]
+    num_quantiles = 9
     quantiles = [0.005, 0.025, 0.165, 0.25, 0.5, 0.75, 0.835, 0.975, 0.995]
+    aggregation_levels = [[],
+                          ["state_id"],
+                          ["store_id"],
+                          ["cat_id"],
+                          ["dept_id"],
+                          ["state_id", "cat_id"],
+                          ["state_id", "dept_id"],
+                          ["store_id", "cat_id"],
+                          ["store_id", "dept_id"],
+                          ["item_id"],
+                          ["state_id", "item_id"],
+                          ["store_id", "item_id"]]
+    event_types = ["Cultural", "National", "Religious", "Sporting"]
 
     def __init__(self, data_path=None):
         self.data_path = os.path.abspath("data") if data_path is None else data_path
@@ -34,24 +60,12 @@ class M5Data:
         self._prices_df = None
 
     @property
-    def num_items(self):
-        return self.sales_df.shape[0]
-
-    @property
-    def num_aggregations(self):
-        return 42840
-
-    @property
     def num_days(self):
-        return self.sales_df.shape[1] - 5 + 2 * 28
+        return self.calendar_df.shape[0]
 
     @property
-    def num_items_by_state(self):
-        return self.sales_df["state_id"].value_counts().to_dict()
-
-    @property
-    def event_types(self):
-        return ["Cultural", "National", "Religious", "Sporting"]
+    def num_train_days(self):
+        return self.sales_df.shape[1] - 5
 
     @property
     def sales_df(self):
@@ -109,13 +123,13 @@ class M5Data:
 
     def get_sales(self):
         """
-        Returns `sales` torch.Tensor with shape `num_items x num_train_days`.
+        Returns `sales` torch.Tensor with shape `num_timeseries x num_train_days`.
         """
         return torch.from_numpy(self.sales_df.iloc[:, 5:].values).type(torch.get_default_dtype())
 
     def get_prices(self, fillna=0.):
         """
-        Returns `prices` torch.Tensor with shape `num_items x num_days`.
+        Returns `prices` torch.Tensor with shape `num_timeseries x num_days`.
 
         In some days, there are some items not available, so their prices will be NaN.
 
@@ -124,7 +138,7 @@ class M5Data:
         x = torch.from_numpy(self.prices_df.values).type(torch.get_default_dtype())
         x[torch.isnan(x)] = fillna
         x = x.repeat_interleave(7, dim=-1)[:, :self.calendar_df.shape[0]]
-        assert x.shape == (self.num_items, self.num_days)
+        assert x.shape == (self.num_timeseries, self.num_days)
         return x
 
     def get_snap(self):
@@ -136,11 +150,10 @@ class M5Data:
         Usage::
 
             >>> m5 = M5Data()
-            >>> snap = m5.get_snap_tensor()
-            >>> assert snap.shape == (3, m5.num_days)
-            >>> n = m5.num_items_by_state
-            >>> snap = snap.repeat_interleave(torch.tensor([n["CA"], n["TX"], n["WI"]]), dim=0)
-            >>> assert snap.shape == (m5.num_items, m5.num_days)
+            >>> snap = m5.get_snap()
+            >>> assert snap.shape == (m5.num_states, m5.num_days)
+            >>> snap = snap.repeat_interleave(torch.tensor(m5.num_stores_by_state), dim=0)
+            >>> assert snap.shape == (m5.num_stores, m5.num_days)
         """
         snap = self.calendar_df[["snap_CA", "snap_TX", "snap_WI"]].values
         x = torch.from_numpy(snap).type(torch.get_default_dtype())
@@ -203,55 +216,39 @@ class M5Data:
 
     def get_christmas(self):
         """
-        Returns a boolean 1D tensor with length `num_days` indicating if that day is
-        Chrismas.
+        Returns a boolean 2D tensor with shape `num_days x 1` indicating
+        if that day is Chrismas.
         """
         christmas = self.calendar_df.index.str.endswith("12-25")[..., None]
         x = torch.from_numpy(christmas).type(torch.get_default_dtype())
         assert x.shape == (self.num_days, 1)
         return x
 
-    def aggregate_samples(self, samples, level):
+    def get_dummy_state(self):
         """
-        Aggregates samples (at the lowest level) to a specific level.
-
-        Usage::
-
-            >>> m5 = M5Data()
-            >>> o = []
-            >>> for level in m5.aggregation_levels:
-            ...     print("Level", level)
-            ...     o.append(m5.aggregate_samples(samples, level))
-            >>> o = torch.cat(o, 1)
-            >>> q = np.quantile(o.numpy(), m5.quantiles, axis=0)  # compute quantiles
-            >>> m5.make_uncertainty_submission("foo.csv", q)
-
-        :param torch.Tensor samples: a tensor with shape `num_samples x num_timeseries x num_days`
-        :returns: a tensor with shape `num_samples x num_aggregated_timeseries x num_days`.
+        Returns dummy state tensor with shape `num_timeseries x num_states`.
         """
-        assert samples.dim() == 3
-        assert samples.size(1) == self.sales_df.shape[0]
-        assert torch.is_tensor(samples)
-        if level == self.aggregation_levels[-1]:
-            x = samples
-        elif level == self.aggregation_levels[0]:
-            x = samples.sum(1, keepdim=True)
-        else:
-            df = self.sales_df.iloc[:, :5]
-            num_days = samples.size(-1)
-            x = samples.permute(1, 2, 0).numpy()
-            for i in range(num_days):
-                df[f"F{i+1}"] = list(x[:, i])
-            df = df.groupby(level, sort=True)[[f"F{i+1}" for i in range(num_days)]].agg(
-                lambda x: [np.array(x).sum(0)])
-            if level == self.aggregation_levels[-2]:
-                # the submission file is messed up from this level
-                df = df.reindex(["WI", "CA", "TX"], level=0)
-            x = samples.new_tensor(df.values.tolist()).squeeze(-2).permute(2, 0, 1)
+        state = pd.get_dummies(self.sales_df.state_id)[self.sales_df.state_id.unique()].values
+        x = torch.from_numpy(state).type(torch.get_default_dtype())
+        assert x.shape == (self.num_timeseries, self.num_states)
+        return x
 
-        assert x.dim() == 3
-        assert x.size(0) == samples.size(0)
-        assert x.size(2) == samples.size(2)
+    def get_dummy_cat(self):
+        """
+        Returns dummy cat tensor with shape `num_timeseries x num_states`.
+        """
+        cat = pd.get_dummies(self.sales_df.cat_id)[self.sales_df.cat_id.unique()].values
+        x = torch.from_numpy(cat).type(torch.get_default_dtype())
+        assert x.shape == (self.num_timeseries, self.num_cats)
+        return x
+
+    def get_dummy_dept(self):
+        """
+        Returns dummy dept tensor with shape `num_timeseries x num_states`.
+        """
+        dept = pd.get_dummies(self.sales_df.dept_id)[self.sales_df.dept_id.unique()].values
+        x = torch.from_numpy(dept).type(torch.get_default_dtype())
+        assert x.shape == (self.num_timeseries, self.num_depts)
         return x
 
     def get_aggregated_sales(self, level):
@@ -265,10 +262,7 @@ class M5Data:
         elif level == self.aggregation_levels[0]:
             x = self.sales_df.iloc[:, 5:].sum().values[None, :]
         else:
-            df = self.sales_df.groupby(level, sort=True).sum()
-            if level == self.aggregation_levels[-2]:
-                # the submission file is messed up from this level
-                df = df.reindex(["WI", "CA", "TX"], level=0)
+            df = self.sales_df.groupby(level, sort=False).sum()
             x = df.values
 
         return torch.from_numpy(x).type(torch.get_default_dtype())
@@ -291,10 +285,7 @@ class M5Data:
             for g in level:
                 df[g] = self.sales_df[g]
 
-            df = df.groupby(level, sort=True).sum()
-            if level == self.aggregation_levels[-2]:
-                # the submission file is messed up from this level
-                df = df.reindex(["WI", "CA", "TX"], level=0)
+            df = df.groupby(level, sort=False).sum()
             x = df.values
 
         return torch.from_numpy(x).type(torch.get_default_dtype())
@@ -321,36 +312,73 @@ class M5Data:
         assert xs.shape[0] == self.num_aggregations
         return xs
 
-    @property
-    def aggregation_levels(self):
+    def aggregate_samples(self, samples, level):
         """
-        Returns the list of all aggregation levels.
+        Aggregates samples (at the lowest level) to a specific level.
+
+        Usage::
+
+            >>> m5 = M5Data()
+            >>> o = []
+            >>> for level in m5.aggregation_levels:
+            ...     print("Level", level)
+            ...     o.append(m5.aggregate_samples(samples, level))
+            >>> o = torch.cat(o, 1)
+            >>> q = np.quantile(o.numpy(), m5.quantiles, axis=0)  # compute quantiles
+            >>> m5.make_uncertainty_submission("foo.csv", q)
+
+        :param torch.Tensor samples: a tensor with shape `num_samples x num_timeseries x num_days`
+        :returns: a tensor with shape `num_samples x num_aggregated_timeseries x num_days`.
         """
-        return [[],
-                ["state_id"],
-                ["store_id"],
-                ["cat_id"],
-                ["dept_id"],
-                ["state_id", "cat_id"],
-                ["state_id", "dept_id"],
-                ["store_id", "cat_id"],
-                ["store_id", "dept_id"],
-                ["item_id"],
-                ["state_id", "item_id"],
-                ["store_id", "item_id"]]
+        assert torch.is_tensor(samples)
+        assert samples.dim() == 3
+        assert samples.size(1) == self.num_timeseries
+        num_samples, duration = samples.size(0), samples.size(-1)
+        samples = samples.reshape(num_samples, self.num_stores, self.num_items, duration)
+
+        if "state_id" in level:
+            tmp = []
+            pos = 0
+            for n in self.num_stores_by_state:
+                tmp.append(samples[:, pos:pos + n].sum(1, keepdim=True))
+            samples = torch.cat(tmp, dim=1)
+        elif "store_id" in level:
+            pass
+        else:
+            samples = samples.sum(1, keepdim=True)
+
+        if "cat_id" in level:
+            tmp = []
+            pos = 0
+            for n in self.num_items_by_cat:
+                tmp.append(samples[:, :, pos:pos + n].sum(2, keepdim=True))
+            samples = torch.cat(tmp, dim=2)
+        elif "dept_id" in level:
+            tmp = []
+            pos = 0
+            for n in self.num_items_by_dept:
+                tmp.append(samples[:, :, pos:pos + n].sum(2, keepdim=True))
+            samples = torch.cat(tmp, dim=2)
+        elif "item_id" in level:
+            pass
+        else:
+            samples = samples.sum(2, keepdim=True)
+
+        n = self.num_aggregations_by_level[self.aggregation_levels.index(level)]
+        return samples.reshape(num_samples, n, duration)
 
     def make_accuracy_submission(self, filename, prediction):
         """
         Makes submission file given prediction result.
 
         :param str filename: name of the submission file.
-        :param torch.Tensor predicition: the prediction tensor with shape `num_items x 28`.
+        :param torch.Tensor predicition: the prediction tensor with shape `num_timeseries x 28`.
         """
         df = self._read_csv("sample_submission.csv", index_col=0)
         if torch.is_tensor(prediction):
             prediction = prediction.detach().cpu().numpy()
         assert isinstance(prediction, np.ndarray)
-        assert prediction.shape == (self.num_items, 28)
+        assert prediction.shape == (self.num_timeseries, 28)
         # the later 28 days only available 1 month before the deadline
         assert df.shape[0] == prediction.shape[0] * 2
         df.iloc[:prediction.shape[0], :] = prediction
@@ -373,6 +401,24 @@ class M5Data:
             prediction = prediction.detach().cpu().numpy()
         assert isinstance(prediction, np.ndarray)
         assert prediction.shape == (9, self.num_aggregations, 28)
+
+        # correct the messy index in submission file
+        tmp = []
+        pos = 0
+        for level, n in zip(self.aggregation_levels, self.num_aggregations_by_level):
+            if level == self.aggregation_levels[0] or level == self.aggregation_levels[-1]:
+                tmp.append(prediction[:, pos:pos+n])
+            else:
+                tmp_df = self.sales_df.groupby(level, sort=False)[["item_id"]].count()
+                tmp_df["id"] = range(tmp_df.shape[0])
+                tmp_df = tmp_df.sort_index()
+                if level == self.aggregation_levels[-2]:
+                    tmp_df = tmp_df.reindex(["WI", "CA", "TX"], level=0)
+                new_index = tmp_df["id"].values
+                tmp.append(prediction[:, pos:pos+n][:, new_index])
+            pos = pos + n
+        prediction = np.concatenate(tmp, axis=1)
+
         prediction = prediction.reshape(-1, 28)
         # the later 28 days only available 1 month before the deadline
         assert df.shape[0] == prediction.shape[0] * 2
