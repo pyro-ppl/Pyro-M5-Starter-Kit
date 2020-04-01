@@ -215,23 +215,40 @@ class M5Data:
         """
         Aggregates samples (at the lowest level) to a specific level.
 
+        Usage::
+
+            >>> m5 = M5Data()
+            >>> o = []
+            >>> for level in m5.aggregation_levels:
+            ...     print("Level", level)
+            ...     o.append(m5.aggregate_samples(samples, level))
+            >>> o = torch.cat(o, 1)
+            >>> q = np.quantile(o.numpy(), m5.quantiles, axis=0)  # compute quantiles
+            >>> m5.make_uncertainty_submission("foo.csv", q)
+
         :param torch.Tensor samples: a tensor with shape `num_samples x num_timeseries x num_days`
         :returns: a tensor with shape `num_samples x num_aggregated_timeseries x num_days`.
         """
         assert samples.dim() == 3
         assert samples.size(1) == self.sales_df.shape[0]
         assert torch.is_tensor(samples)
-        if len(level) == 0:
-            return samples.sum(1, keepdim=True)
-
-        df = self.sales_df.iloc[:, :5]
-        num_days = samples.size(-1)
-        x = samples.permute(1, 2, 0).numpy()
-        for i in range(num_days):
-            df[f"F{i+1}"] = list(x[:, i])
-        df = df.groupby(level, sort=False)[[f"F{i+1}" for i in range(num_days)]].agg(
+        if level == self.aggregation_levels[-1]:
+            x = samples
+        elif level == self.aggregation_levels[0]:
+            x = samples.sum(1, keepdim=True)
+        else:
+            df = self.sales_df.iloc[:, :5]
+            num_days = samples.size(-1)
+            x = samples.permute(1, 2, 0).numpy()
+            for i in range(num_days):
+                df[f"F{i+1}"] = list(x[:, i])
+            df = df.groupby(level, sort=True)[[f"F{i+1}" for i in range(num_days)]].agg(
                 lambda x: [np.array(x).sum(0)])
-        x = samples.new_tensor(df.values.tolist()).squeeze(-2).permute(2, 0, 1)
+            if level == self.aggregation_levels[-2]:
+                # the submission file is messed up from this level
+                df = df.reindex(["WI", "CA", "TX"], level=0)
+            x = samples.new_tensor(df.values.tolist()).squeeze(-2).permute(2, 0, 1)
+
         assert x.dim() == 3
         assert x.size(0) == samples.size(0)
         assert x.size(2) == samples.size(2)
@@ -243,10 +260,17 @@ class M5Data:
 
         The result will be a tensor with shape `num_timeseries x num_train_days`.
         """
-        if len(level) > 0:
-            x = self.sales_df.groupby(level, sort=False).sum().values
-        else:
+        if level == self.aggregation_levels[-1]:
+            x = self.sales_df.iloc[:, 5:].values
+        elif level == self.aggregation_levels[0]:
             x = self.sales_df.iloc[:, 5:].sum().values[None, :]
+        else:
+            df = self.sales_df.groupby(level, sort=True).sum()
+            if level == self.aggregation_levels[-2]:
+                # the submission file is messed up from this level
+                df = df.reindex(["WI", "CA", "TX"], level=0)
+            x = df.values
+
         return torch.from_numpy(x).type(torch.get_default_dtype())
 
     def get_aggregated_ma_dollar_sales(self, level):
@@ -259,12 +283,20 @@ class M5Data:
         prices = self.prices_df.values.repeat(7, axis=1)[:, :self.sales_df.shape[1] - 5]
         df = (self.sales_df.iloc[:, 5:] * prices).T.rolling(28, min_periods=1).mean().T
 
-        if len(level) > 0:
+        if level == self.aggregation_levels[-1]:
+            x = df.values
+        elif level == self.aggregation_levels[0]:
+            x = df.sum().values[None, :]
+        else:
             for g in level:
                 df[g] = self.sales_df[g]
-            x = df.groupby(level, sort=False).sum().values
-        else:
-            x = df.sum().values[None, :]
+
+            df = df.groupby(level, sort=True).sum()
+            if level == self.aggregation_levels[-2]:
+                # the submission file is messed up from this level
+                df = df.reindex(["WI", "CA", "TX"], level=0)
+            x = df.values
+
         return torch.from_numpy(x).type(torch.get_default_dtype())
 
     def get_all_aggregated_sales(self):
@@ -345,7 +377,9 @@ class M5Data:
         # the later 28 days only available 1 month before the deadline
         assert df.shape[0] == prediction.shape[0] * 2
         df.iloc[:prediction.shape[0], :] = prediction
-        df.to_csv(filename)
+        # use float_format to reduce the size of output file,
+        # recommended at https://www.kaggle.com/c/m5-forecasting-uncertainty/discussion/135049
+        df.to_csv(filename, float_format='%.3f')
 
 
 class BatchDataLoader:
