@@ -312,7 +312,7 @@ class M5Data:
         assert xs.shape[0] == self.num_aggregations
         return xs
 
-    def aggregate_samples(self, samples, level):
+    def aggregate_samples(self, samples, level, *extra_levels):
         """
         Aggregates samples (at the lowest level) to a specific level.
 
@@ -328,44 +328,53 @@ class M5Data:
             >>> m5.make_uncertainty_submission("foo.csv", q)
 
         :param torch.Tensor samples: a tensor with shape `num_samples x num_timeseries x num_days`
+        :param list level: which level to aggregate
+        :param extra_levels: additional levels to aggregate; the results for all levels will be
+            concatenated together.
         :returns: a tensor with shape `num_samples x num_aggregated_timeseries x num_days`.
         """
         assert torch.is_tensor(samples)
         assert samples.dim() == 3
         assert samples.size(1) == self.num_timeseries
         num_samples, duration = samples.size(0), samples.size(-1)
-        samples = samples.reshape(num_samples, self.num_stores, self.num_items, duration)
+        x = samples.reshape(num_samples, self.num_stores, self.num_items, duration)
 
         if "state_id" in level:
             tmp = []
             pos = 0
             for n in self.num_stores_by_state:
-                tmp.append(samples[:, pos:pos + n].sum(1, keepdim=True))
-            samples = torch.cat(tmp, dim=1)
+                tmp.append(x[:, pos:pos + n].sum(1, keepdim=True))
+            x = torch.cat(tmp, dim=1)
         elif "store_id" in level:
             pass
         else:
-            samples = samples.sum(1, keepdim=True)
+            x = x.sum(1, keepdim=True)
 
         if "cat_id" in level:
             tmp = []
             pos = 0
             for n in self.num_items_by_cat:
-                tmp.append(samples[:, :, pos:pos + n].sum(2, keepdim=True))
-            samples = torch.cat(tmp, dim=2)
+                tmp.append(x[:, :, pos:pos + n].sum(2, keepdim=True))
+            x = torch.cat(tmp, dim=2)
         elif "dept_id" in level:
             tmp = []
             pos = 0
             for n in self.num_items_by_dept:
-                tmp.append(samples[:, :, pos:pos + n].sum(2, keepdim=True))
-            samples = torch.cat(tmp, dim=2)
+                tmp.append(x[:, :, pos:pos + n].sum(2, keepdim=True))
+            x = torch.cat(tmp, dim=2)
         elif "item_id" in level:
             pass
         else:
-            samples = samples.sum(2, keepdim=True)
+            x = x.sum(2, keepdim=True)
 
         n = self.num_aggregations_by_level[self.aggregation_levels.index(level)]
-        return samples.reshape(num_samples, n, duration)
+        x = x.reshape(num_samples, n, duration)
+        if extra_levels:
+            tmp = [x]
+            for level in extra_levels:
+                tmp.append(self.aggregate_samples(samples, level))
+            x = torch.cat(tmp, 1)
+        return x
 
     def make_accuracy_submission(self, filename, prediction):
         """
@@ -384,7 +393,7 @@ class M5Data:
         df.iloc[:prediction.shape[0], :] = prediction
         df.to_csv(filename)
 
-    def make_uncertainty_submission(self, filename, prediction):
+    def make_uncertainty_submission(self, filename, prediction, float_format='%.3g'):
         """
         Makes submission file given prediction result.
 
@@ -425,7 +434,7 @@ class M5Data:
         df.iloc[:prediction.shape[0], :] = prediction
         # use float_format to reduce the size of output file,
         # recommended at https://www.kaggle.com/c/m5-forecasting-uncertainty/discussion/135049
-        df.to_csv(filename, float_format='%.3f')
+        df.to_csv(filename, float_format=float_format)
 
 
 class BatchDataLoader:
