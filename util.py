@@ -274,7 +274,7 @@ class M5Data:
 
         The result can be used as `weight` for evaluation metrics.
         """
-        prices = self.prices_df.values.repeat(7, axis=1)[:, :self.sales_df.shape[1] - 5]
+        prices = self.prices_df.fillna(0.).values.repeat(7, axis=1)[:, :self.sales_df.shape[1] - 5]
         df = (self.sales_df.iloc[:, 5:] * prices).T.rolling(28, min_periods=1).mean().T
 
         if level == self.aggregation_levels[-1]:
@@ -344,6 +344,7 @@ class M5Data:
             pos = 0
             for n in self.num_stores_by_state:
                 tmp.append(x[:, pos:pos + n].sum(1, keepdim=True))
+                pos = pos + n
             x = torch.cat(tmp, dim=1)
         elif "store_id" in level:
             pass
@@ -355,12 +356,14 @@ class M5Data:
             pos = 0
             for n in self.num_items_by_cat:
                 tmp.append(x[:, :, pos:pos + n].sum(2, keepdim=True))
+                pos = pos + n
             x = torch.cat(tmp, dim=2)
         elif "dept_id" in level:
             tmp = []
             pos = 0
             for n in self.num_items_by_dept:
                 tmp.append(x[:, :, pos:pos + n].sum(2, keepdim=True))
+                pos = pos + n
             x = torch.cat(tmp, dim=2)
         elif "item_id" in level:
             pass

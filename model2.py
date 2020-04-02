@@ -17,11 +17,11 @@ import torch
 
 import pyro
 import pyro.distributions as dist
-from pyro.contrib.forecast import ForecastingModel, Forecaster, backtest
-from pyro.ops.tensor_utils import periodic_repeat, periodic_features
-from pyro.ops.stats import quantile
+from pyro.contrib.forecast import ForecastingModel, Forecaster
+from pyro.nn import PyroModule, PyroParam
+from pyro.ops.tensor_utils import periodic_repeat
 
-from evaluate import m5_backtest, get_metric_scale
+from evaluate import eval_mae, eval_rmse, eval_pl, m5_backtest
 from util import M5Data
 
 
@@ -107,6 +107,39 @@ class Model(ForecastingModel):
             self.predict(noise_dist, mean.new_zeros(mean.shape))
 
 
+class NormalGuide(PyroModule):
+    def __init__(self):
+        super().__init__()
+        self.ma_weight_loc = PyroParam(torch.zeros(10, 1, 1, 2, 3, 7), event_dim=3)
+        self.ma_weight_scale = PyroParam(torch.ones(10, 1, 1, 2, 3, 7) * 0.1,
+                                         dist.constraints.positive, event_dim=3)
+        self.snap_weight_loc = PyroParam(torch.zeros(10, 1, 1, 2, 7), event_dim=2)
+        self.snap_weight_scale = PyroParam(torch.ones(10, 1, 1, 2, 7) * 0.1,
+                                           dist.constraints.positive, event_dim=2)
+        self.seasonal_loc = PyroParam(torch.zeros(10, 1, 7, 2, 7), event_dim=2)
+        self.seasonal_scale = PyroParam(torch.ones(10, 1, 7, 2, 7) * 0.1,
+                                        dist.constraints.positive, event_dim=2)
+
+    def forward(self, data, covariates):
+        num_stores = data.size(0)
+        store_plate = pyro.plate("store", num_stores, dim=-3)
+        day_of_week_plate = pyro.plate("day_of_week", 7, dim=-1)
+
+        with store_plate:
+            pyro.sample("ma_weight",
+                        dist.Normal(self.ma_weight_loc, self.ma_weight_scale).to_event(3))
+            pyro.sample("snap_weight",
+                        dist.Normal(self.snap_weight_loc, self.snap_weight_scale).to_event(2))
+            with day_of_week_plate:
+                pyro.sample("seasonal",
+                            dist.Normal(self.seasonal_loc, self.seasonal_scale).to_event(2))
+
+
+def create_plates(zero_data, covariates):
+    # NB: with size=60, it took about 50 epochs to walk through the whole dataset
+    return pyro.plate("product", zero_data.shape[1], subsample_size=60, dim=-2)
+
+
 # forecasting requires too much memory resources, so we will draw samples
 # in batches and cast each batch to CPU;
 # in addition, we will skip the unnecessary training data and
@@ -157,22 +190,13 @@ def main(args):
     log_ma = torch.cat([ma28x1, ma28x2, ma28x3], -1).clamp(min=1e-3).log()
     del ma28x1, ma28x2, ma28x3  # save memory
 
-    forecaster_options = {
-        "learning_rate": args.learning_rate,
-        "learning_rate_decay": args.learning_rate_decay,
-        "clip_norm": args.clip_norm,
-        "num_steps": args.num_steps,
-        "log_every": args.log_every,
-    }
-
     def transform(pred, truth):
-        truth = truth.round()
-        # transform to aggregated data
-        return pred.exp(), truth.exp()
-
-    def create_plates(zero_data, covariates):
-        # NB: with size=60, it took about 50 epochs to walk through the whole dataset
-        return pyro.plate("product", zero_data.shape[1], subsample_size=60, dim=-2)
+        num_samples, duration = pred.size(0), pred.size(-2)
+        pred = pred.reshape(num_samples, -1, duration)
+        truth = truth.round().reshape(-1, duration).cpu()
+        agg_pred = m5.aggregate_samples(pred, *m5.aggregation_levels)
+        agg_truth = m5.aggregate_samples(truth.unsqueeze(0), *m5.aggregation_levels).squeeze(0)
+        return agg_pred.unsqueeze(-1), agg_truth.unsqueeze(-1)
 
     data = data.clamp(min=1e-3).to(args.device)
     covariates = covariates.to(args.device)
@@ -183,15 +207,24 @@ def main(args):
     if data.is_cuda:
         torch.set_default_tensor_type(torch.cuda.FloatTensor)
 
+    forecaster_options = {
+        "create_plates": create_plates,
+        "learning_rate": args.learning_rate,
+        "learning_rate_decay": args.learning_rate_decay,
+        "clip_norm": args.clip_norm,
+        "num_steps": args.num_steps,
+        "log_every": args.log_every,
+        # xxx: NormalGuide is much slower than AutoNormalGuide ???
+        "guide": None,  # NormalGuide(),
+    }
+
     if args.submit:
         pyro.set_rng_seed(args.seed)
         print("Training...")
         forecaster = M5Forecaster(Model(snap, dept, saled, log_ma),
                                   data[:, :, T0:T1],
                                   covariates[T0:T1],
-                                  create_plates=create_plates,
-                                  learning_rate=0.1, learning_rate_decay=0.1,
-                                  num_steps=1001, log_every=100)
+                                  **forecaster_options)
 
         print("Forecasting...")
         samples = forecaster(data[:, :, T0:T1], covariates[T0:T2], num_samples=1000, batch_size=10)
@@ -203,21 +236,37 @@ def main(args):
         print("Make submission...")
         m5.make_uncertainty_submission(args.output_file, q, float_format='%.3f')
     else:
-        # TODO: revise
-        min_train_window = T1 - args.test_window - (args.num_windows - 1) * args.stride
-        windows = m5_backtest(data, covariates[:T1], Model,
+        # calculate weight of each timeseries
+        weight = m5.get_aggregated_ma_dollar_sales(m5.aggregation_levels[-1]).cpu()
+        weight = weight / weight.sum(0, keepdim=True)
+        agg_weight = m5.aggregate_samples(weight.unsqueeze(0), *m5.aggregation_levels).squeeze(0)
+
+        min_train_window = T1 - T0 - args.test_window - (args.num_windows - 1) * args.stride
+        print("Backtesting with skip window {}...".format(T0))
+        # we will skip crps because it is slow
+        metrics = {"mae": eval_mae, "rmse": eval_rmse, "pl": eval_pl}
+        windows = m5_backtest(data, covariates[:T1],
+                              lambda: Model(snap, dept, saled, log_ma),
+                              weight=agg_weight,
+                              skip_window=T0,
+                              metrics=metrics,
                               transform=transform,
+                              forecaster_fn=M5Forecaster,
                               min_train_window=min_train_window,
                               test_window=args.test_window,
                               stride=args.stride,
                               forecaster_options=forecaster_options,
+                              num_samples=1000,
+                              batch_size=10,
                               seed=args.seed)
 
         with open(args.output_file, "wb") as f:
             pickle.dump(windows, f)
 
-        values = torch.tensor([w["ws_pl"] for w in windows])
-        print("{} = {:0.3g} +- {:0.2g}".format("WSPL", values.mean(), values.std()))
+        for metric in metrics:
+            ws_name = "ws_{}".format(metric)
+            values = torch.tensor([w[ws_name] for w in windows])
+            print("{} = {:0.3g} +- {:0.2g}".format(ws_name, values.mean(), values.std()))
 
 
 if __name__ == "__main__":
@@ -233,7 +282,7 @@ if __name__ == "__main__":
     parser.add_argument("--log-every", default=100, type=int)
     parser.add_argument("--seed", default=1, type=int)
     parser.add_argument("-o", "--output-file", default="", type=str)
-    parser.add_argument("--submit", action="store_true", default=True)
+    parser.add_argument("--submit", action="store_true", default=False)
     parser.add_argument("--device", default="cpu", type=str)
     args = parser.parse_args()
 
