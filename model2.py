@@ -108,7 +108,7 @@ class Model(ForecastingModel):
 
 
 class NormalGuide(PyroModule):
-    def __init__(self):
+    def __init__(self, create_plates=None):
         super().__init__()
         self.ma_weight_loc = PyroParam(torch.zeros(10, 1, 1, 2, 3, 7), event_dim=3)
         self.ma_weight_scale = PyroParam(torch.ones(10, 1, 1, 2, 3, 7) * 0.1,
@@ -119,9 +119,12 @@ class NormalGuide(PyroModule):
         self.seasonal_loc = PyroParam(torch.zeros(10, 1, 7, 2, 7), event_dim=2)
         self.seasonal_scale = PyroParam(torch.ones(10, 1, 7, 2, 7) * 0.1,
                                         dist.constraints.positive, event_dim=2)
+        self.create_plates = create_plates
 
     def forward(self, data, covariates):
         num_stores = data.size(0)
+        if self.create_plates is not None:
+            product_plate = self.create_plates(data, covariates)  # noqa: F841
         store_plate = pyro.plate("store", num_stores, dim=-3)
         day_of_week_plate = pyro.plate("day_of_week", 7, dim=-1)
 
@@ -190,14 +193,6 @@ def main(args):
     log_ma = torch.cat([ma28x1, ma28x2, ma28x3], -1).clamp(min=1e-3).log()
     del ma28x1, ma28x2, ma28x3  # save memory
 
-    def transform(pred, truth):
-        num_samples, duration = pred.size(0), pred.size(-2)
-        pred = pred.reshape(num_samples, -1, duration)
-        truth = truth.round().reshape(-1, duration).cpu()
-        agg_pred = m5.aggregate_samples(pred, *m5.aggregation_levels)
-        agg_truth = m5.aggregate_samples(truth.unsqueeze(0), *m5.aggregation_levels).squeeze(0)
-        return agg_pred.unsqueeze(-1), agg_truth.unsqueeze(-1)
-
     data = data.clamp(min=1e-3).to(args.device)
     covariates = covariates.to(args.device)
     snap = snap.to(args.device)
@@ -207,16 +202,25 @@ def main(args):
     if data.is_cuda:
         torch.set_default_tensor_type(torch.cuda.FloatTensor)
 
-    forecaster_options = {
-        "create_plates": create_plates,
-        "learning_rate": args.learning_rate,
-        "learning_rate_decay": args.learning_rate_decay,
-        "clip_norm": args.clip_norm,
-        "num_steps": args.num_steps,
-        "log_every": args.log_every,
-        # xxx: NormalGuide is much slower than AutoNormalGuide ???
-        "guide": None,  # NormalGuide(),
-    }
+    def transform(pred, truth):
+        num_samples, duration = pred.size(0), pred.size(-2)
+        pred = pred.reshape(num_samples, -1, duration)
+        truth = truth.round().reshape(-1, duration).cpu()
+        agg_pred = m5.aggregate_samples(pred, *m5.aggregation_levels)
+        agg_truth = m5.aggregate_samples(truth.unsqueeze(0), *m5.aggregation_levels).squeeze(0)
+        return agg_pred.unsqueeze(-1), agg_truth.unsqueeze(-1)
+
+    def forecaster_options_fn(t0=None, t1=None, t2=None):
+        forecaster_options = {
+            "create_plates": create_plates,
+            "learning_rate": args.learning_rate,
+            "learning_rate_decay": args.learning_rate_decay,
+            "clip_norm": args.clip_norm,
+            "num_steps": args.num_steps,
+            "log_every": args.log_every,
+            "guide": NormalGuide(create_plates),
+        }
+        return forecaster_options
 
     if args.submit:
         pyro.set_rng_seed(args.seed)
@@ -224,7 +228,7 @@ def main(args):
         forecaster = M5Forecaster(Model(snap, dept, saled, log_ma),
                                   data[:, :, T0:T1],
                                   covariates[T0:T1],
-                                  **forecaster_options)
+                                  **forecaster_options_fn())
 
         print("Forecasting...")
         samples = forecaster(data[:, :, T0:T1], covariates[T0:T2], num_samples=1000, batch_size=10)
@@ -255,7 +259,7 @@ def main(args):
                               min_train_window=min_train_window,
                               test_window=args.test_window,
                               stride=args.stride,
-                              forecaster_options=forecaster_options,
+                              forecaster_options=forecaster_options_fn,
                               num_samples=1000,
                               batch_size=10,
                               seed=args.seed)
