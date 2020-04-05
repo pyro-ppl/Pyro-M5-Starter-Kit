@@ -6,13 +6,14 @@ Top-down model
 ==============
 
 This script gives an example on how to use Pyro forecast module to backtest and
-make a submission for M5 accuracy competition.
+make a submission for M5 accuracy/uncertainty competition.
 
 Using the top-down approach in [1], we first construct a model to predict
 the aggregated sales across all items. Then we will distribute the aggregated
 prediction to each product based on its total sales during the last 28 days.
 
-The result is barely better than the best benchmark model ESX from the competition.
+The results are barely better than the best benchmark models from both accuracy
+and uncertainty competition.
 
 **References**
 
@@ -24,6 +25,7 @@ import argparse
 import os
 import pickle
 
+import numpy as np
 import pyro
 import pyro.distributions as dist
 import torch
@@ -80,7 +82,8 @@ def main(args):
     time = torch.arange(T0, float(T2), device="cpu") / 365
     covariates = torch.cat([
         time.unsqueeze(-1),
-        # we will use dummy days of month (1, 2, ..., 31) as feature
+        # we will use dummy days of month (1, 2, ..., 31) as feature;
+        # alternatively, we can use SNAP feature `m5.get_snap()[T0:T2]`
         m5.get_dummy_day_of_month()[T0:T2],
     ], dim=-1)
 
@@ -102,8 +105,8 @@ def main(args):
     if args.submit:
         pyro.set_rng_seed(args.seed)
         forecaster = Forecaster(Model(), data, covariates[:-28], **forecaster_options)
-        samples = forecaster(data, covariates, num_samples=1000).exp()
-        pred = samples.mean(0).squeeze(-1).cpu()
+        samples = forecaster(data, covariates, num_samples=1000).exp().squeeze(-1).cpu()
+        pred = samples.mean(0)
 
         # we use top-down approach to distribute the aggregated forecast sales `pred`
         # for each items at the bottom level;
@@ -113,6 +116,16 @@ def main(args):
         proportion = sales_last28.sum(-1) / sales_last28.sum()
         prediction = proportion.ger(pred)
         m5.make_accuracy_submission(args.output_file, prediction)
+
+        # similarly, we also use top-down approach for uncertainty prediction
+        non_agg_samples = torch.poisson(samples.unsqueeze(1) * proportion.unsqueeze(-1))
+        agg_samples = m5.aggregate_samples(non_agg_samples, *m5.aggregation_levels)
+        # cast to numpy because pyro quantile implementation is memory hungry
+        print("Calculate quantiles...")
+        q = np.quantile(agg_samples.numpy(), m5.quantiles, axis=0)
+        print("Make uncertainty submission...")
+        filename, ext = os.path.splitext(args.output_file)
+        m5.make_uncertainty_submission(filename + "_uncertainty" + ext, q, float_format='%.3f')
     else:
         min_train_window = data.size(-2) - args.test_window - (args.num_windows - 1) * args.stride
         windows = m5_backtest(data, covariates[:-28], Model,

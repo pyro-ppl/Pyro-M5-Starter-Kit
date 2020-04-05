@@ -100,7 +100,7 @@ class Model(ForecastingModel):
 
         rate = scale.reciprocal()
         concentration = mean * rate
-        # alternative: GammaPoisson (or NegativeBinomial)
+        # alternative: GammaPoisson (or NegativeBinomial, ZeroInflatedNegativeBinomial)
         noise_dist = dist.Gamma(concentration, rate)
 
         with store_plate, product_plate:
