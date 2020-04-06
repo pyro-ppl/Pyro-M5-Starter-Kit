@@ -12,7 +12,7 @@ Using the top-down approach in [1], we first construct a model to predict
 the aggregated sales across all items. Then we will distribute the aggregated
 prediction to each product based on its total sales during the last 28 days.
 
-The results are barely better than the best benchmark models from both accuracy
+The results are a little bit better than the best benchmark models from both accuracy
 and uncertainty competition.
 
 **References**
@@ -66,13 +66,12 @@ class Model(ForecastingModel):
 
         # make prediction
         prediction = bias + trend + seasonal + regressor
-        # note that the `pyro.contrib.forecast` module requires that the last
-        # dimension of the data is timeseries dimension;
-        # despite that our data is univariate, we need to follow that requirement
-        # and make sure that the last dimension is 1.
+        # because Pyro forecasting framework is multivariate,
+        # for univariate timeseries we need to make sure that
+        # the last dimension is 1
         prediction = prediction.unsqueeze(-1)
 
-        # Now, we will use heavy tail noises because the data has some outlier
+        # Now, we will use heavy tail noise because the data has some outliers
         # (such as Christmas day)
         dof = pyro.sample("dof", dist.Uniform(1, 10))
         noise_scale = pyro.sample("noise_scale", dist.LogNormal(-2, 1))

@@ -119,7 +119,7 @@ class Model(ForecastingModel):
 
 # By default, the Forecaster class will use the AutoNormal guide by default.
 # It saves time to construct a guide for our model. However, in some situations,
-# constructing a custom guide is helpful (especially for armotized guides depending
+# constructing a custom guide is helpful (especially for amortized guides depending
 # on data - e.g. variational autoencoder).
 # So here, we illustrate how to write a custom guide.
 class NormalGuide(PyroModule):

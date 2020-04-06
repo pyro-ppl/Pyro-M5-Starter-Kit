@@ -128,7 +128,7 @@ def main(args):
         pred = pred / num_items_by_dept.unsqueeze(-1).unsqueeze(-1)
         non_agg_pred = pred.repeat_interleave(num_items_by_dept, dim=-3)
         non_agg_pred = non_agg_pred.reshape(num_samples, -1, duration)
-        # note that store+dept is the forth level from bottom up.
+        # note that store+dept is the fourth level from bottom up.
         agg_pred = m5.aggregate_samples(non_agg_pred, *m5.aggregation_levels[:-3])
 
         # similarly, we apply the same procedure for truth data
