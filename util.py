@@ -214,6 +214,15 @@ class M5Data:
         assert x.shape == (self.num_days, 7)
         return x
 
+    def get_dummy_year(self):
+        """
+        Returns dummy year tensor with shape `num_days x 6`.
+        """
+        year = pd.get_dummies(pd.to_datetime(self.calendar_df.index).year).values
+        x = torch.from_numpy(year).type(torch.get_default_dtype())
+        assert x.shape == (self.num_days, 6)
+        return x
+
     def get_christmas(self):
         """
         Returns a boolean 2D tensor with shape `num_days x 1` indicating

@@ -87,7 +87,8 @@ def get_metric_scale(metric, train_data):
 @torch.no_grad()
 def eval_weighted_scale(metric, value, train_data, weight):
     scale = get_metric_scale(metric, train_data)
-    return (weight * value / scale).sum().cpu().item()
+    ws = weight * value / scale
+    return ws.sum().cpu().item()
 
 
 def m5_backtest(data, covariates, model_fn, weight=None, skip_window=0, **kwargs):

@@ -2,17 +2,18 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Top-down model
+Top-down Model
 ==============
 
 This script gives an example on how to use Pyro forecast module to backtest and
-make a submission for M5 accuracy competition.
+make a submission for M5 accuracy/uncertainty competition.
 
 Using the top-down approach in [1], we first construct a model to predict
 the aggregated sales across all items. Then we will distribute the aggregated
 prediction to each product based on its total sales during the last 28 days.
 
-The result is barely better than the best benchmark model ESX from the competition.
+The results are a little bit better than the best benchmark models from both accuracy
+and uncertainty competition.
 
 **References**
 
@@ -24,6 +25,7 @@ import argparse
 import os
 import pickle
 
+import numpy as np
 import pyro
 import pyro.distributions as dist
 import torch
@@ -40,6 +42,8 @@ if not os.path.exists(RESULTS):
     os.makedirs(RESULTS)
 
 
+# The model we are going to construct is a linear model in log scale
+# with additive weekly seasonality.
 class Model(ForecastingModel):
     def model(self, zero_data, covariates):
         assert zero_data.size(-1) == 1  # univariate
@@ -47,21 +51,28 @@ class Model(ForecastingModel):
         time, feature = covariates[..., 0], covariates[..., 1:]
 
         bias = pyro.sample("bias", dist.Normal(0, 10))
+        # construct a linear trend; we know that the sales are increasing
+        # through years, so a positive-support prior should be used here
         trend_coef = pyro.sample("trend", dist.LogNormal(-2, 1))
         trend = trend_coef * time
         # set prior of weights of the remaining covariates
         weight = pyro.sample("weight",
                              dist.Normal(0, 1).expand([feature.size(-1)]).to_event(1))
         regressor = (weight * feature).sum(-1)
-        # encode weekly seasonality
+        # encode the additive weekly seasonality
         with pyro.plate("day_of_week", 7, dim=-1):
             seasonal = pyro.sample("seasonal", dist.Normal(0, 5))
         seasonal = periodic_repeat(seasonal, duration, dim=-1)
 
+        # make prediction
         prediction = bias + trend + seasonal + regressor
+        # because Pyro forecasting framework is multivariate,
+        # for univariate timeseries we need to make sure that
+        # the last dimension is 1
         prediction = prediction.unsqueeze(-1)
 
-        # now, we will use heavy tail noise
+        # Now, we will use heavy tail noise because the data has some outliers
+        # (such as Christmas day)
         dof = pyro.sample("dof", dist.Uniform(1, 10))
         noise_scale = pyro.sample("noise_scale", dist.LogNormal(-2, 1))
         noise_dist = dist.StudentT(dof.unsqueeze(-1), 0, noise_scale.unsqueeze(-1))
@@ -69,6 +80,9 @@ class Model(ForecastingModel):
 
 
 def main(args):
+    # The M5Data class can load and provide helpful properties and methods
+    # to manipulate the dataset. It is advised to take a look at its
+    # definition in `util.py` file.
     m5 = M5Data()
     # get aggregated sales of all items from all Walmart stores
     data = m5.get_aggregated_sales(m5.aggregation_levels[0])[0].unsqueeze(-1)
@@ -80,7 +94,8 @@ def main(args):
     time = torch.arange(T0, float(T2), device="cpu") / 365
     covariates = torch.cat([
         time.unsqueeze(-1),
-        # we will use dummy days of month (1, 2, ..., 31) as feature
+        # we will use dummy days of month (1, 2, ..., 31) as feature;
+        # alternatively, we can use SNAP feature `m5.get_snap()[T0:T2]`
         m5.get_dummy_day_of_month()[T0:T2],
     ], dim=-1)
 
@@ -102,8 +117,8 @@ def main(args):
     if args.submit:
         pyro.set_rng_seed(args.seed)
         forecaster = Forecaster(Model(), data, covariates[:-28], **forecaster_options)
-        samples = forecaster(data, covariates, num_samples=1000).exp()
-        pred = samples.mean(0).squeeze(-1).cpu()
+        samples = forecaster(data, covariates, num_samples=1000).exp().squeeze(-1).cpu()
+        pred = samples.mean(0)
 
         # we use top-down approach to distribute the aggregated forecast sales `pred`
         # for each items at the bottom level;
@@ -112,8 +127,38 @@ def main(args):
         sales_last28 = m5.get_aggregated_sales(m5.aggregation_levels[-1])[:, -28:]
         proportion = sales_last28.sum(-1) / sales_last28.sum()
         prediction = proportion.ger(pred)
+        # make the accuracy submission
         m5.make_accuracy_submission(args.output_file, prediction)
+
+        # Similarly, we also use top-down approach for uncertainty prediction
+        non_agg_samples = samples.unsqueeze(1) * proportion.unsqueeze(-1)
+        # Note that in the above code, we distributed the aggregated result to
+        # each individual timeseries at the non-aggregated level. In other words,
+        # we just scale down the aggregated predictions. The standard deviation
+        # of the aggregated data is about ~7000. Hence, with 30490 non-aggregated
+        # timeseries, in average, each of them will have a pretty small standard
+        # deviation (about 0.2). Hence, quantile results will be pretty bad.
+        # To remedy that issue, we will assume that the non-aggregated timeseries
+        # has Poisson distribution and the top-down approach gives prediction of
+        # the rate (also the mean) of Poisson distribution. In other words,
+        # we need to draw Poisson samples from the non-aggregated prediction.
+        non_agg_samples = torch.poisson(non_agg_samples)
+        agg_samples = m5.aggregate_samples(non_agg_samples, *m5.aggregation_levels)
+        # cast to numpy because pyro quantile implementation is memory hungry
+        print("Calculate quantiles...")
+        q = np.quantile(agg_samples.numpy(), m5.quantiles, axis=0)
+        print("Make uncertainty submission...")
+        filename, ext = os.path.splitext(args.output_file)
+        m5.make_uncertainty_submission(filename + "_uncertainty" + ext, q, float_format='%.3f')
     else:
+        # Here we do backtesting to verify if our generative model is a good candidate.
+        # This is a popular validation method for timeseries forecasting.
+        # You can use backtest to adjust your priors. Another helpful method to
+        # adjust priors is to train a `forecaster` as above and inspect the parameters
+        # using the code `forecaster.guide.median()`).
+
+        # Calculate the smallest training window so that the total number of windows for
+        # backtesting is the same as the one defined in `args.num_windows`.
         min_train_window = data.size(-2) - args.test_window - (args.num_windows - 1) * args.stride
         windows = m5_backtest(data, covariates[:-28], Model,
                               transform=transform,
@@ -123,9 +168,11 @@ def main(args):
                               forecaster_options=forecaster_options,
                               seed=args.seed)
 
+        # by default, the result will be saved in `results/model1.pkl` file
         with open(args.output_file, "wb") as f:
             pickle.dump(windows, f)
 
+        # print out the mean and std of the weighted RMSSE and weighted SPL metrics
         for name in ["ws_rmse", "ws_pl"]:
             values = torch.tensor([w[name] for w in windows])
             print("{} = {:0.3g} +- {:0.2g}".format(name, values.mean(), values.std()))

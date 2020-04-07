@@ -2,8 +2,16 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Hierarchial model
+Hierarchial Model
 =================
+
+In this model, we want to illustrate how to construct a hierarchial model
+to tackle the hierarchial structure of M5 competition.
+
+You might observe that the result is not as good as top-down or middle-out
+approach in model1 and model3. However, we think that this approach is both
+interesting and theoretically elegant. We welcome any discussion about this
+approach in our forum or this github repository.
 """
 
 
@@ -32,7 +40,9 @@ if not os.path.exists(RESULTS):
 
 
 def bounded_exp(x, bound=1e3):
-    # this utility is very helpful at early training phase
+    # This utility sets an upper bound for `exp` operator
+    # This is very helpful at early training phase
+    # to make sure that `exp(x)` does not blow up.
     return (x - math.log(bound)).sigmoid() * bound
 
 
@@ -100,16 +110,23 @@ class Model(ForecastingModel):
 
         rate = scale.reciprocal()
         concentration = mean * rate
-        # alternative: GammaPoisson (or NegativeBinomial)
+        # alternative: GammaPoisson (or NegativeBinomial, ZeroInflatedNegativeBinomial)
         noise_dist = dist.Gamma(concentration, rate)
 
         with store_plate, product_plate:
             self.predict(noise_dist, mean.new_zeros(mean.shape))
 
 
+# By default, the Forecaster class will use the AutoNormal guide by default.
+# It saves time to construct a guide for our model. However, in some situations,
+# constructing a custom guide is helpful (especially for amortized guides depending
+# on data - e.g. variational autoencoder).
+# So here, we illustrate how to write a custom guide.
 class NormalGuide(PyroModule):
     def __init__(self, create_plates=None):
         super().__init__()
+        # we define parameters here; make sure that the shape is aligned
+        # with the shapes of sample sites in model.
         self.ma_weight_loc = PyroParam(torch.zeros(10, 1, 1, 2, 3, 7), event_dim=3)
         self.ma_weight_scale = PyroParam(torch.ones(10, 1, 1, 2, 3, 7) * 0.1,
                                          dist.constraints.positive, event_dim=3)
@@ -138,6 +155,7 @@ class NormalGuide(PyroModule):
                             dist.Normal(self.seasonal_loc, self.seasonal_scale).to_event(2))
 
 
+# we use create_plates to do subsampling over 3049 products
 def create_plates(zero_data, covariates):
     # NB: with size=60, it took about 50 epochs to walk through the whole dataset
     return pyro.plate("product", zero_data.shape[1], subsample_size=60, dim=-2)
@@ -177,7 +195,7 @@ def main(args):
     assert (T2 - T0) % 28 == 0
 
     covariates = torch.arange(T2).unsqueeze(-1)
-    # extra covariates
+    # extra covariates (see explanations in Model constructor)
     snap = m5.get_snap().repeat_interleave(torch.tensor([4, 3, 3]), dim=-1)
     snap = snap.t().unsqueeze(1).unsqueeze(-1)
     dept = m5.get_dummy_dept().reshape(10, -1, 7).unsqueeze(-2)
@@ -203,6 +221,8 @@ def main(args):
         torch.set_default_tensor_type(torch.cuda.FloatTensor)
 
     def transform(pred, truth):
+        # our pred/truth are timeseries at non-aggregated level;
+        # we will aggregate them to all aggregation levels before evaluation.
         num_samples, duration = pred.size(0), pred.size(-2)
         pred = pred.reshape(num_samples, -1, duration)
         truth = truth.round().reshape(-1, duration).cpu()
@@ -240,6 +260,8 @@ def main(args):
         print("Make submission...")
         m5.make_uncertainty_submission(args.output_file, q, float_format='%.3f')
     else:
+        # In this branch, we do backtesting.
+
         # calculate weight of each timeseries
         weight = m5.get_aggregated_ma_dollar_sales(m5.aggregation_levels[-1]).cpu()
         weight = weight / weight.sum(0, keepdim=True)
