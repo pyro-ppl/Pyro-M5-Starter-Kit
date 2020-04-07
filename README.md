@@ -1,5 +1,3 @@
-![DRAFT](https://img.shields.io/badge/status-draft-red.svg)
-
 # Pyro M5 Starter Kit
 
 This repo aims to help you learn the [Pyro](https://pyro.ai) probabilistic programming language through the [M5 forecasting competition](https://www.kaggle.com/c/m5-forecasting-uncertainty/overview).
